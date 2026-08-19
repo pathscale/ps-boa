@@ -1,5 +1,5 @@
 [package]
-name = "boa_wintertc"
+name = "ps-boa-wintertc"
 description = "WinterTC (TC55) Minimum Common Web API implementation for the Boa JavaScript engine."
 keywords = ["javascript", "js", "runtime", "tc55", "wintertc"]
 categories = ["wasm", "web-programming"]
@@ -9,6 +9,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "boa_wintertc"
 
 [dependencies]
 boa_engine.workspace = true

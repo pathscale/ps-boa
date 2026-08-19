@@ -1,5 +1,5 @@
 [package]
-name = "boa_engine"
+name = "ps-boa-engine"
 keywords = ["javascript", "js", "compiler", "lexer", "parser"]
 categories = ["parser-implementations", "compilers"]
 readme = "../../README.md"

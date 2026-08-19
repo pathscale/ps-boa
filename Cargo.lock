@@ -316,29 +316,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "boa_ast"
-version = "1.0.0-dev"
-dependencies = [
- "arbitrary",
- "bitflags",
- "boa_interner",
- "boa_macros",
- "boa_string",
- "indexmap",
- "num-bigint",
- "rustc-hash 2.1.2",
- "serde",
- "strum",
-]
-
-[[package]]
 name = "boa_benches"
 version = "0.1.0"
 dependencies = [
- "boa_engine",
- "boa_runtime",
  "criterion",
  "jemallocator",
+ "ps-boa-engine",
+ "ps-boa-runtime",
  "walkdir",
 ]
 
@@ -347,10 +331,6 @@ name = "boa_cli"
 version = "1.0.0-dev"
 dependencies = [
  "async-channel",
- "boa_engine",
- "boa_gc",
- "boa_parser",
- "boa_runtime",
  "clap",
  "color-eyre",
  "colored",
@@ -360,6 +340,10 @@ dependencies = [
  "jemallocator",
  "mimalloc-safe",
  "phf",
+ "ps-boa-engine",
+ "ps-boa-gc",
+ "ps-boa-parser",
+ "ps-boa-runtime",
  "regex",
  "rustls",
  "rustyline",
@@ -369,100 +353,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "boa_engine"
-version = "1.0.0-dev"
-dependencies = [
- "aligned-vec",
- "arrayvec",
- "async-channel",
- "bitflags",
- "boa_ast",
- "boa_gc",
- "boa_icu_provider",
- "boa_interner",
- "boa_macros",
- "boa_parser",
- "boa_string",
- "bytemuck",
- "cfg-if",
- "cow-utils",
- "criterion",
- "dashmap",
- "dynify",
- "either",
- "fast-float2",
- "fixed_decimal",
- "float-cmp",
- "float16",
- "futures-concurrency",
- "futures-lite",
- "getrandom 0.4.3",
- "hashbrown 0.17.1",
- "husky-rs",
- "iana-time-zone",
- "icu_calendar",
- "icu_casemap",
- "icu_collator",
- "icu_datetime",
- "icu_decimal",
- "icu_list",
- "icu_locale",
- "icu_normalizer",
- "icu_plurals",
- "icu_provider",
- "icu_segmenter",
- "icu_time",
- "indexmap",
- "indoc",
- "intrusive-collections",
- "itertools 0.15.0",
- "jemallocator",
- "lz4_flex",
- "num-bigint",
- "num-integer",
- "num-traits",
- "num_enum",
- "oneshot",
- "pastey",
- "portable-atomic",
- "rand",
- "regress",
- "rustc-hash 2.1.2",
- "ryu-js",
- "serde",
- "serde_json",
- "small_btree",
- "static_assertions",
- "sys-locale",
- "tag_ptr",
- "tap",
- "temporal_rs",
- "test-case",
- "textwrap",
- "thin-vec",
- "thiserror 2.0.18",
- "time",
- "timezone_provider",
- "tinystr",
- "web-time",
- "writeable",
- "xsum",
- "yoke",
- "zerofrom",
-]
-
-[[package]]
 name = "boa_examples"
 version = "1.0.0-dev"
 dependencies = [
- "boa_ast",
- "boa_engine",
- "boa_gc",
- "boa_interner",
- "boa_parser",
- "boa_runtime",
  "futures-concurrency",
  "futures-lite",
+ "ps-boa-ast",
+ "ps-boa-engine",
+ "ps-boa-gc",
+ "ps-boa-interner",
+ "ps-boa-parser",
+ "ps-boa-runtime",
  "reqwest",
  "rustls",
  "smol",
@@ -471,131 +372,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "boa_gc"
-version = "1.0.0-dev"
-dependencies = [
- "arrayvec",
- "boa_macros",
- "boa_string",
- "either",
- "hashbrown 0.17.1",
- "icu_locale_core",
- "thin-vec",
-]
-
-[[package]]
-name = "boa_icu_provider"
-version = "1.0.0-dev"
-dependencies = [
- "icu_casemap",
- "icu_collator",
- "icu_datetime",
- "icu_decimal",
- "icu_list",
- "icu_locale",
- "icu_normalizer",
- "icu_plurals",
- "icu_provider",
- "icu_provider_adapters",
- "icu_provider_blob",
- "icu_segmenter",
- "icu_time",
- "once_cell",
- "pastey",
-]
-
-[[package]]
-name = "boa_interner"
-version = "1.0.0-dev"
-dependencies = [
- "arbitrary",
- "boa_gc",
- "boa_macros",
- "hashbrown 0.17.1",
- "indexmap",
- "once_cell",
- "phf",
- "rustc-hash 2.1.2",
- "serde",
- "static_assertions",
-]
-
-[[package]]
-name = "boa_macros"
-version = "1.0.0-dev"
-dependencies = [
- "cfg-if",
- "cow-utils",
- "lz4_flex",
- "proc-macro2",
- "quote",
- "syn",
- "synstructure",
- "test-case",
-]
-
-[[package]]
 name = "boa_macros_tests"
 version = "1.0.0-dev"
 dependencies = [
- "boa_engine",
- "boa_gc",
+ "ps-boa-engine",
+ "ps-boa-gc",
  "trybuild",
-]
-
-[[package]]
-name = "boa_parser"
-version = "1.0.0-dev"
-dependencies = [
- "bitflags",
- "boa_ast",
- "boa_interner",
- "boa_macros",
- "fast-float2",
- "icu_properties",
- "indoc",
- "num-bigint",
- "num-traits",
- "regress",
- "rustc-hash 2.1.2",
- "strum",
-]
-
-[[package]]
-name = "boa_runtime"
-version = "1.0.0-dev"
-dependencies = [
- "base64",
- "boa_engine",
- "boa_gc",
- "bus",
- "bytemuck",
- "comfy-table",
- "either",
- "futures",
- "futures-lite",
- "http",
- "indoc",
- "reqwest",
- "rstest",
- "rustc-hash 2.1.2",
- "serde_json",
- "temp-env",
- "test-case",
- "textwrap",
- "url",
-]
-
-[[package]]
-name = "boa_string"
-version = "1.0.0-dev"
-dependencies = [
- "fast-float2",
- "itoa",
- "pastey",
- "rustc-hash 2.1.2",
- "ryu-js",
- "static_assertions",
 ]
 
 [[package]]
@@ -603,14 +385,14 @@ name = "boa_tester"
 version = "1.0.0-dev"
 dependencies = [
  "bitflags",
- "boa_engine",
- "boa_runtime",
  "clap",
  "color-eyre",
  "colored",
  "comfy-table",
  "cow-utils",
  "phf",
+ "ps-boa-engine",
+ "ps-boa-runtime",
  "rayon",
  "rustc-hash 2.1.2",
  "serde",
@@ -624,17 +406,10 @@ dependencies = [
 name = "boa_wasm"
 version = "1.0.0-dev"
 dependencies = [
- "boa_engine",
  "console_error_panic_hook",
+ "ps-boa-engine",
  "wasm-bindgen",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "boa_wintertc"
-version = "1.0.0-dev"
-dependencies = [
- "boa_engine",
 ]
 
 [[package]]
@@ -2343,8 +2118,8 @@ dependencies = [
 name = "insta-bytecode"
 version = "1.0.0-dev"
 dependencies = [
- "boa_engine",
  "insta",
+ "ps-boa-engine",
 ]
 
 [[package]]
@@ -3093,6 +2868,231 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "ps-boa-ast"
+version = "1.0.0-dev"
+dependencies = [
+ "arbitrary",
+ "bitflags",
+ "indexmap",
+ "num-bigint",
+ "ps-boa-interner",
+ "ps-boa-macros",
+ "ps-boa-string",
+ "rustc-hash 2.1.2",
+ "serde",
+ "strum",
+]
+
+[[package]]
+name = "ps-boa-engine"
+version = "1.0.0-dev"
+dependencies = [
+ "aligned-vec",
+ "arrayvec",
+ "async-channel",
+ "bitflags",
+ "bytemuck",
+ "cfg-if",
+ "cow-utils",
+ "criterion",
+ "dashmap",
+ "dynify",
+ "either",
+ "fast-float2",
+ "fixed_decimal",
+ "float-cmp",
+ "float16",
+ "futures-concurrency",
+ "futures-lite",
+ "getrandom 0.4.3",
+ "hashbrown 0.17.1",
+ "husky-rs",
+ "iana-time-zone",
+ "icu_calendar",
+ "icu_casemap",
+ "icu_collator",
+ "icu_datetime",
+ "icu_decimal",
+ "icu_list",
+ "icu_locale",
+ "icu_normalizer",
+ "icu_plurals",
+ "icu_provider",
+ "icu_segmenter",
+ "icu_time",
+ "indexmap",
+ "indoc",
+ "intrusive-collections",
+ "itertools 0.15.0",
+ "jemallocator",
+ "lz4_flex",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "num_enum",
+ "oneshot",
+ "pastey",
+ "portable-atomic",
+ "ps-boa-ast",
+ "ps-boa-gc",
+ "ps-boa-icu-provider",
+ "ps-boa-interner",
+ "ps-boa-macros",
+ "ps-boa-parser",
+ "ps-boa-string",
+ "rand",
+ "regress",
+ "rustc-hash 2.1.2",
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "small_btree",
+ "static_assertions",
+ "sys-locale",
+ "tag_ptr",
+ "tap",
+ "temporal_rs",
+ "test-case",
+ "textwrap",
+ "thin-vec",
+ "thiserror 2.0.18",
+ "time",
+ "timezone_provider",
+ "tinystr",
+ "web-time",
+ "writeable",
+ "xsum",
+ "yoke",
+ "zerofrom",
+]
+
+[[package]]
+name = "ps-boa-gc"
+version = "1.0.0-dev"
+dependencies = [
+ "arrayvec",
+ "either",
+ "hashbrown 0.17.1",
+ "icu_locale_core",
+ "ps-boa-macros",
+ "ps-boa-string",
+ "thin-vec",
+]
+
+[[package]]
+name = "ps-boa-icu-provider"
+version = "1.0.0-dev"
+dependencies = [
+ "icu_casemap",
+ "icu_collator",
+ "icu_datetime",
+ "icu_decimal",
+ "icu_list",
+ "icu_locale",
+ "icu_normalizer",
+ "icu_plurals",
+ "icu_provider",
+ "icu_provider_adapters",
+ "icu_provider_blob",
+ "icu_segmenter",
+ "icu_time",
+ "once_cell",
+ "pastey",
+]
+
+[[package]]
+name = "ps-boa-interner"
+version = "1.0.0-dev"
+dependencies = [
+ "arbitrary",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "once_cell",
+ "phf",
+ "ps-boa-gc",
+ "ps-boa-macros",
+ "rustc-hash 2.1.2",
+ "serde",
+ "static_assertions",
+]
+
+[[package]]
+name = "ps-boa-macros"
+version = "1.0.0-dev"
+dependencies = [
+ "cfg-if",
+ "cow-utils",
+ "lz4_flex",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+ "test-case",
+]
+
+[[package]]
+name = "ps-boa-parser"
+version = "1.0.0-dev"
+dependencies = [
+ "bitflags",
+ "fast-float2",
+ "icu_properties",
+ "indoc",
+ "num-bigint",
+ "num-traits",
+ "ps-boa-ast",
+ "ps-boa-interner",
+ "ps-boa-macros",
+ "regress",
+ "rustc-hash 2.1.2",
+ "strum",
+]
+
+[[package]]
+name = "ps-boa-runtime"
+version = "1.0.0-dev"
+dependencies = [
+ "base64",
+ "bus",
+ "bytemuck",
+ "comfy-table",
+ "either",
+ "futures",
+ "futures-lite",
+ "http",
+ "indoc",
+ "ps-boa-engine",
+ "ps-boa-gc",
+ "reqwest",
+ "rstest",
+ "rustc-hash 2.1.2",
+ "serde_json",
+ "temp-env",
+ "test-case",
+ "textwrap",
+ "url",
+]
+
+[[package]]
+name = "ps-boa-string"
+version = "1.0.0-dev"
+dependencies = [
+ "fast-float2",
+ "itoa",
+ "pastey",
+ "rustc-hash 2.1.2",
+ "ryu-js",
+ "static_assertions",
+]
+
+[[package]]
+name = "ps-boa-wintertc"
+version = "1.0.0-dev"
+dependencies = [
+ "ps-boa-engine",
 ]
 
 [[package]]

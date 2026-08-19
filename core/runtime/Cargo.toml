@@ -1,5 +1,5 @@
 [package]
-name = "boa_runtime"
+name = "ps-boa-runtime"
 description = "Example runtime for the Boa JavaScript engine."
 keywords = ["javascript", "js", "runtime"]
 categories = ["command-line-utilities"]
@@ -9,6 +9,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "boa_runtime"
 
 [dependencies]
 boa_engine.workspace = true

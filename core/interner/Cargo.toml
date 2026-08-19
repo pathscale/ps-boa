@@ -1,5 +1,5 @@
 [package]
-name = "boa_interner"
+name = "ps-boa-interner"
 description = "String interner for the Boa JavaScript engine."
 keywords = ["javascript", "js", "string", "interner"]
 categories = ["data-structures", "no-std"]
@@ -13,6 +13,9 @@ rust-version.workspace = true
 [features]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
+
+[lib]
+name = "boa_interner"
 
 [dependencies]
 boa_macros.workspace = true

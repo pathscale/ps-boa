@@ -52,3 +52,7 @@ perf.data*
 # Nix
 /.envrc
 /.direnv
+
+# Handover and session notes are never committed. See AGENTS.md.
+HANDOVER*.md
+docs/HANDOVER*.md

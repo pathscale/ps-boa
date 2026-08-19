@@ -1,5 +1,5 @@
 [package]
-name = "boa_string"
+name = "ps-boa-string"
 keywords = ["javascript", "js", "string"]
 categories = ["parser-implementations", "compilers"]
 readme = "../../README.md"
@@ -10,6 +10,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "boa_string"
 
 [dependencies]
 itoa.workspace = true

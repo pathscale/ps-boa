@@ -1,5 +1,5 @@
 [package]
-name = "boa_ast"
+name = "ps-boa-ast"
 description = "Abstract Syntax Tree definition for the Boa JavaScript engine."
 keywords = ["javascript", "js", "syntax", "ast"]
 categories = ["parser-implementations", "compilers"]
@@ -14,6 +14,9 @@ rust-version.workspace = true
 annex-b = []
 serde = ["dep:serde", "boa_interner/serde", "bitflags/serde", "num-bigint/serde"]
 arbitrary = ["dep:arbitrary", "boa_interner/arbitrary", "num-bigint/arbitrary"]
+
+[lib]
+name = "boa_ast"
 
 [dependencies]
 boa_interner.workspace = true

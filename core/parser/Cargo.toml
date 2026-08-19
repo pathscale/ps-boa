@@ -1,5 +1,5 @@
 [package]
-name = "boa_parser"
+name = "ps-boa-parser"
 description = "ECMAScript parser for the Boa JavaScript engine."
 keywords = ["javascript", "js", "syntax", "parser"]
 categories = ["parser-implementations", "compilers"]
@@ -9,6 +9,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "boa_parser"
 
 [dependencies]
 boa_interner.workspace = true

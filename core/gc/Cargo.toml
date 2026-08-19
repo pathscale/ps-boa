@@ -1,5 +1,5 @@
 [package]
-name = "boa_gc"
+name = "ps-boa-gc"
 description = "Garbage collector for the Boa JavaScript engine."
 keywords = ["javascript", "js", "garbage", "memory"]
 categories = ["command-line-utilities"]
@@ -21,6 +21,9 @@ boa_string = ["dep:boa_string"]
 either = ["dep:either"]
 # Enable default implementations of trace and finalize for the arrayvec crate
 arrayvec = ["dep:arrayvec"]
+
+[lib]
+name = "boa_gc"
 
 [dependencies]
 boa_macros.workspace = true

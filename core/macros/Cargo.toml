@@ -1,5 +1,5 @@
 [package]
-name = "boa_macros"
+name = "ps-boa-macros"
 description = "Macros for the Boa JavaScript engine."
 version.workspace = true
 edition.workspace = true
@@ -9,6 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [lib]
+name = "boa_macros"
 proc-macro = true
 
 [dependencies]
