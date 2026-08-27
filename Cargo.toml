@@ -26,7 +26,7 @@ exclude = [
 
 [workspace.package]
 edition = "2024"
-version = "1.0.2-dev"
+version = "1.0.2"
 rust-version = "1.91.0"
 authors = ["boa-dev"]
 repository = "https://github.com/boa-dev/boa"
@@ -36,15 +36,15 @@ description = "Boa is a Javascript lexer, parser and compiler written in Rust. C
 [workspace.dependencies]
 
 # Repo Crates
-boa_ast = { package = "ps-boa-ast", version = "^1.0.2-dev", path = "core/ast" }
-boa_engine = { package = "ps-boa-engine", version = "^1.0.2-dev", path = "core/engine", default-features = false }
-boa_gc = { package = "ps-boa-gc", version = "^1.0.2-dev", path = "core/gc" }
-boa_icu_provider = { package = "ps-boa-icu-provider", version = "^1.0.2-dev", path = "core/icu_provider" }
-boa_interner = { package = "ps-boa-interner", version = "^1.0.2-dev", path = "core/interner" }
-boa_macros = { package = "ps-boa-macros", version = "^1.0.2-dev", path = "core/macros" }
-boa_parser = { package = "ps-boa-parser", version = "^1.0.2-dev", path = "core/parser" }
-boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2-dev", path = "core/runtime" }
-boa_string = { package = "ps-boa-string", version = "^1.0.2-dev", path = "core/string" }
+boa_ast = { package = "ps-boa-ast", version = "^1.0.2", path = "core/ast" }
+boa_engine = { package = "ps-boa-engine", version = "^1.0.2", path = "core/engine", default-features = false }
+boa_gc = { package = "ps-boa-gc", version = "^1.0.2", path = "core/gc" }
+boa_icu_provider = { package = "ps-boa-icu-provider", version = "^1.0.2", path = "core/icu_provider" }
+boa_interner = { package = "ps-boa-interner", version = "^1.0.2", path = "core/interner" }
+boa_macros = { package = "ps-boa-macros", version = "^1.0.2", path = "core/macros" }
+boa_parser = { package = "ps-boa-parser", version = "^1.0.2", path = "core/parser" }
+boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2", path = "core/runtime" }
+boa_string = { package = "ps-boa-string", version = "^1.0.2", path = "core/string" }
 
 # Utility Repo Crates
 tag_ptr = { version = "~0.1.0", path = "utils/tag_ptr" }
