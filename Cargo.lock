@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "boa_cli"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "async-channel",
  "clap",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "boa_examples"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "futures-concurrency",
  "futures-lite",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "boa_macros_tests"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "ps-boa-engine",
  "ps-boa-gc",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "boa_tester"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "bitflags",
  "clap",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "boa_wasm"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "console_error_panic_hook",
  "ps-boa-engine",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "gen-icu4x-data"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "icu_casemap",
  "icu_collator",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "insta-bytecode"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "insta",
  "ps-boa-engine",
@@ -2872,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-ast"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "arbitrary",
  "bitflags",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-engine"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "aligned-vec",
  "arrayvec",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-gc"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "arrayvec",
  "either",
@@ -2984,7 +2984,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-icu-provider"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "icu_casemap",
  "icu_collator",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-interner"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "arbitrary",
  "hashbrown 0.17.1",
@@ -3021,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-macros"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "cfg-if",
  "cow-utils",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-parser"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "bitflags",
  "fast-float2",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-runtime"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "base64",
  "bus",
@@ -3078,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-string"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "fast-float2",
  "itoa",
@@ -3090,7 +3090,7 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-wintertc"
-version = "1.0.1-dev"
+version = "1.0.2-dev"
 dependencies = [
  "ps-boa-engine",
 ]

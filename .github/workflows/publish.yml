@@ -1,0 +1,128 @@
+name: Publish crates
+
+# A workspace version bump is the release trigger.
+#
+# This repository had no publish workflow at all, so a merged change reached
+# master and stopped there. `WeakJsObject` was added for pathscale/ps-blitz#67
+# and sat unpublished while that PR stayed red on
+# `unresolved import boa_engine::object::WeakJsObject`, because the version on
+# the registry predated it. Merging is not releasing, and nothing here said so.
+#
+# Publish the whole dependency-connected set rather than `ps-boa-engine` alone.
+# A consumer resolves every one of these from crates.io, so shipping the engine
+# against unpublished siblings leaves a release nobody can build.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - Cargo.toml
+      - core/**
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Package and verify without uploading'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-ps-boa
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish ps-boa
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read the workspace version
+        id: registry
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "workspace version is $version"
+
+      # Dependency order, read from the manifests rather than guessed. Each
+      # crate resolves the ones before it from crates.io, so a crate has to be
+      # servable before the next one is packaged:
+      #
+      #   string, macros, icu-provider  no internal dependencies
+      #   gc                            string, macros
+      #   interner                      macros, gc
+      #   ast                           interner, macros, string
+      #   parser                        interner, macros, ast
+      #   engine                        all of the above
+      #   runtime                       engine, gc
+      #
+      # No `--locked`. A publish should resolve the newest version each caret
+      # permits rather than freeze whatever CI last happened to build, which is
+      # the point of expressing the floors as carets.
+      - name: Publish, in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.registry.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          if [ "$DRY_RUN" != 'true' ] && [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo 'CARGO_REGISTRY_TOKEN is not set on this repository' >&2
+            exit 1
+          fi
+
+          crates='ps-boa-string ps-boa-macros ps-boa-icu-provider ps-boa-gc
+                  ps-boa-interner ps-boa-ast ps-boa-parser ps-boa-engine
+                  ps-boa-runtime'
+
+          published=''
+          skipped=''
+          for crate in $crates; do
+            existing="$(curl -sS -H 'User-Agent: pathscale-ci' \
+              "https://crates.io/api/v1/crates/$crate/versions" \
+              | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+            if [ -n "$existing" ]; then
+              echo "$crate $VERSION is already published, skipping"
+              skipped="$skipped $crate"
+              continue
+            fi
+
+            echo "::group::$crate $VERSION"
+            if [ "$DRY_RUN" = 'true' ]; then
+              cargo package -p "$crate"
+            else
+              cargo publish -p "$crate"
+              # crates.io serves a new version a moment after the upload
+              # returns. Without this the next crate resolves the previous one
+              # and gets a 404, which reads as a dependency failure rather than
+              # a race.
+              for _ in $(seq 1 60); do
+                found="$(curl -sS -H 'User-Agent: pathscale-ci' \
+                  "https://crates.io/api/v1/crates/$crate/versions" \
+                  | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+                [ -n "$found" ] && break
+                sleep 5
+              done
+            fi
+            echo '::endgroup::'
+            published="$published $crate"
+          done
+
+          {
+            echo "## ps-boa $VERSION"
+            echo
+            [ -n "$published" ] && echo "Published:$published"
+            [ -n "$skipped" ] && echo "Already on the registry:$skipped"
+          } >> "$GITHUB_STEP_SUMMARY"
