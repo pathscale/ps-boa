@@ -71,10 +71,50 @@ impl<T: NativeObject> Clone for JsObject<T> {
     }
 }
 
-/// An `Object` that has an additional `vtable` with its internal methods.
-// We have to skip implementing `Debug` for this because not using the
-// implementation of `Debug` for `JsObject` could easily cause stack overflows,
-// so we have to force our users to debug the `JsObject` instead.
+/// A weak handle to a [`JsObject`], from [`JsObject::downgrade`].
+///
+/// Opaque on purpose: the object it points at is a crate-private type, and a
+/// host holding one of these has no business naming it. The only question worth
+/// asking is whether the object is still alive, which [`Self::upgrade`]
+/// answers.
+///
+/// This exists for host-side caches keyed by something other than the object
+/// itself. A DOM binding caches a wrapper per node so `===` and expando
+/// properties behave; holding those strongly makes the cache the sole reason
+/// every wrapper stays alive, so nothing keyed by it can ever be released.
+// No `Debug`: the pointee deliberately has none, because printing an object
+// through its own graph is how you get a stack overflow.
+#[allow(missing_debug_implementations)]
+pub struct WeakJsObject<T: NativeObject + ?Sized = ErasedObjectData>(
+    boa_gc::WeakGc<VTableObject<T>>,
+);
+
+// Hand-written rather than derived: `derive(Clone)` would demand `T: Clone`,
+// which the pointee is not and does not need to be. `Sized` because that is
+// what `WeakGc`'s own `Clone` asks for.
+impl<T: NativeObject> Clone for WeakJsObject<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+// Delegated rather than derived: `WeakGc` already implements both, and a
+// derive here would install a second `Drop` alongside the one `Finalize`
+// brings.
+impl<T: NativeObject + ?Sized> Finalize for WeakJsObject<T> {}
+unsafe impl<T: NativeObject + ?Sized> Trace for WeakJsObject<T> {
+    boa_gc::custom_trace!(this, mark, mark(&this.0));
+}
+
+impl<T: NativeObject> WeakJsObject<T> {
+    /// The object, if script can still reach it.
+    #[must_use]
+    #[inline]
+    pub fn upgrade(&self) -> Option<JsObject<T>> {
+        self.0.upgrade().map(|inner| JsObject { inner })
+    }
+}
+
 #[allow(missing_debug_implementations)]
 #[derive(Trace, Finalize)]
 pub(crate) struct VTableObject<T: NativeObject + ?Sized> {
@@ -793,6 +833,24 @@ Cannot both specify accessors and a value or writable attribute",
 }
 
 impl<T: NativeObject> JsObject<T> {
+    /// A weak handle to this object.
+    ///
+    /// The counterpart to [`WeakGc::upgrade`], and the reason it is needed: a
+    /// host that caches wrappers by some native key has to be able to ask
+    /// whether script can still reach one. Holding the strong handle makes the
+    /// cache itself the answer, so the cache pins every object it has ever seen
+    /// and nothing keyed by it can ever be released.
+    ///
+    /// A DOM binding is the motivating case. Wrappers are cached per node so
+    /// that `===` and expando properties behave, and with a strong cache the
+    /// document can never drop a removed node, because every node script has
+    /// touched looks reachable for ever.
+    #[must_use]
+    #[inline]
+    pub fn downgrade(&self) -> WeakJsObject<T> {
+        WeakJsObject(boa_gc::WeakGc::new(&self.inner))
+    }
+
     /// Immutably borrows the `Object`.
     ///
     /// The borrow lasts until the returned `Ref` exits scope.
