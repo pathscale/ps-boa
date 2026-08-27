@@ -120,9 +120,18 @@ jobs:
             published="$published $crate"
           done
 
+          # Written out rather than `[ -n "$x" ] && echo`, which returns 1 when
+          # the test is false and takes the whole script down under `set -e`.
+          # That is how a run where all nine crates uploaded still reported
+          # failure: nothing was skipped, so the second line exited 1 after the
+          # work was done.
           {
             echo "## ps-boa $VERSION"
             echo
-            [ -n "$published" ] && echo "Published:$published"
-            [ -n "$skipped" ] && echo "Already on the registry:$skipped"
+            if [ -n "$published" ]; then
+              echo "Published:$published"
+            fi
+            if [ -n "$skipped" ]; then
+              echo "Already on the registry:$skipped"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
