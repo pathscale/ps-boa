@@ -34,6 +34,7 @@ icu_locale = { workspace = true, features = ["datagen"] }
 icu_normalizer = { workspace = true, features = ["datagen"] }
 icu_plurals = { workspace = true, features = ["datagen", "unstable"] }
 icu_segmenter = { workspace = true, features = ["datagen"] }
+brotli = { workspace = true }
 
 [lints]
 workspace = true
