@@ -15,7 +15,7 @@ name = "boa_icu_provider"
 
 [dependencies]
 icu_provider = { workspace = true, features = ["sync"] }
-icu_provider_blob.workspace = true
+icu_provider_blob = { workspace = true, features = ["alloc"] }
 icu_provider_adapters = { workspace = true, features = ["serde"] }
 icu_casemap = { workspace = true, features = ["serde", "datagen"] }
 icu_collator = { workspace = true, features = ["serde", "datagen"] }
@@ -27,12 +27,13 @@ icu_locale = { workspace = true, features = ["serde", "datagen"] }
 icu_normalizer = { workspace = true, features = ["serde", "datagen"] }
 icu_plurals = { workspace = true, features = ["serde", "datagen", "unstable"] }
 icu_segmenter = { workspace = true, features = ["serde", "datagen"] }
+brotli-decompressor = { workspace = true }
 once_cell = { workspace = true, default-features = false, features = ["critical-section"] }
 pastey.workspace = true
 
 [features]
 default = ["std"]
-std = ["once_cell/std"]
+std = ["once_cell/std", "brotli-decompressor/std"]
 
 [lints]
 workspace = true

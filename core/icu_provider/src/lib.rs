@@ -21,6 +21,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
+use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use icu_locale::LocaleFallbacker;
@@ -29,21 +30,44 @@ use icu_provider_adapters::{fallback::LocaleFallbackProvider, fork::MultiForkByM
 use icu_provider_blob::BlobDataProvider;
 use once_cell::sync::{Lazy, OnceCell};
 
-/// A buffer provider that is lazily deserialized at the first data request.
+/// A buffer provider that is lazily decompressed and deserialized at the first
+/// data request.
 ///
-/// The provider must specify the list of keys it supports, to avoid deserializing the
+/// The provider must specify the list of keys it supports, to avoid decompressing the
 /// buffer for unknown keys.
+///
+/// `compressed` holds a brotli stream rather than the postcard blob itself. The
+/// blobs are highly compressible -- 8.7MB of postcard becomes 3.2MB -- and the
+/// whole set would otherwise be embedded verbatim in every binary that enables
+/// `Intl`. Decompression happens once, inside the same `OnceCell` that already
+/// deferred deserialization, so the cost is paid per service and only by a
+/// program that actually asks that service for data. A page that never formats
+/// a date never expands the 2.3MB segmenter.
 struct LazyBufferProvider {
     provider: OnceCell<BlobDataProvider>,
-    bytes: &'static [u8],
+    compressed: &'static [u8],
     valid_markers: &'static [DataMarkerInfo],
+}
+
+impl LazyBufferProvider {
+    /// Decompresses the embedded blob and hands it to a [`BlobDataProvider`].
+    fn init(&self) -> Result<BlobDataProvider, DataError> {
+        let mut blob = Vec::new();
+        brotli_decompressor::BrotliDecompress(&mut &self.compressed[..], &mut blob)
+            .map_err(|_| DataErrorKind::Custom.with_str_context("could not decompress ICU data"))?;
+        BlobDataProvider::try_new_from_blob(blob.into_boxed_slice())
+    }
+
+    fn get(&self) -> Result<&BlobDataProvider, DataError> {
+        self.provider.get_or_try_init(|| self.init())
+    }
 }
 
 impl Debug for LazyBufferProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LazyBufferProvider")
             .field("provider", &self.provider)
-            .field("bytes", &"[...]")
+            .field("compressed", &"[...]")
             .field("valid_keys", &self.valid_markers)
             .finish()
     }
@@ -59,12 +83,7 @@ impl DynamicDataProvider<BufferMarker> for LazyBufferProvider {
             return Err(DataErrorKind::MarkerNotFound.with_marker(marker));
         }
 
-        let Ok(provider) = self
-            .provider
-            .get_or_try_init(|| BlobDataProvider::try_new_from_static_blob(self.bytes))
-        else {
-            return Err(DataErrorKind::Custom.with_str_context("invalid blob data provider"));
-        };
+        let provider = self.get()?;
 
         provider.load_data(marker, req)
     }
@@ -80,12 +99,7 @@ impl DynamicDryDataProvider<BufferMarker> for LazyBufferProvider {
             return Err(DataErrorKind::MarkerNotFound.with_marker(marker));
         }
 
-        let Ok(provider) = self
-            .provider
-            .get_or_try_init(|| BlobDataProvider::try_new_from_static_blob(self.bytes))
-        else {
-            return Err(DataErrorKind::Custom.with_str_context("invalid blob data provider"));
-        };
+        let provider = self.get()?;
 
         provider.dry_load_data(marker, req)
     }
@@ -97,11 +111,11 @@ macro_rules! provider_from_icu_crate {
         pastey::paste! {
             LazyBufferProvider {
                 provider: OnceCell::new(),
-                bytes: include_bytes!(concat!(
+                compressed: include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/data/",
                     stringify!($service),
-                    ".postcard",
+                    ".postcard.br",
                 )),
                 valid_markers: $service::provider::MARKERS,
             }
@@ -109,21 +123,26 @@ macro_rules! provider_from_icu_crate {
     };
 }
 
+/// Every embedded service, each still compressed and undeserialized.
+fn services() -> Vec<LazyBufferProvider> {
+    alloc::vec![
+        provider_from_icu_crate!(icu_casemap),
+        provider_from_icu_crate!(icu_collator),
+        provider_from_icu_crate!(icu_datetime),
+        provider_from_icu_crate!(icu_time),
+        provider_from_icu_crate!(icu_decimal),
+        provider_from_icu_crate!(icu_list),
+        provider_from_icu_crate!(icu_locale),
+        provider_from_icu_crate!(icu_normalizer),
+        provider_from_icu_crate!(icu_plurals),
+        provider_from_icu_crate!(icu_segmenter),
+    ]
+}
+
 /// Boa's default buffer provider.
 static PROVIDER: Lazy<LocaleFallbackProvider<MultiForkByMarkerProvider<LazyBufferProvider>>> =
     Lazy::new(|| {
-        let provider = MultiForkByMarkerProvider::new(alloc::vec![
-            provider_from_icu_crate!(icu_casemap),
-            provider_from_icu_crate!(icu_collator),
-            provider_from_icu_crate!(icu_datetime),
-            provider_from_icu_crate!(icu_time),
-            provider_from_icu_crate!(icu_decimal),
-            provider_from_icu_crate!(icu_list),
-            provider_from_icu_crate!(icu_locale),
-            provider_from_icu_crate!(icu_normalizer),
-            provider_from_icu_crate!(icu_plurals),
-            provider_from_icu_crate!(icu_segmenter),
-        ]);
+        let provider = MultiForkByMarkerProvider::new(services());
         let fallbacker = LocaleFallbacker::try_new_with_buffer_provider(&provider)
             .expect("The statically compiled data file should be valid.");
         LocaleFallbackProvider::new(provider, fallbacker)
@@ -164,4 +183,55 @@ where
 #[must_use]
 pub fn buffer() -> impl DynamicDryDataProvider<BufferMarker> {
     Wrapper(&*PROVIDER)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::services;
+
+    /// Decompresses and deserializes every embedded service.
+    ///
+    /// The `Intl` tests in `boa_engine` only reach a handful of services --
+    /// datetime, locale, decimal -- so a blob that failed to compress, or was
+    /// regenerated against a mismatched icu4x, would ship undetected in the
+    /// other seven. In particular nothing else in the workspace touches the
+    /// segmenter, which is by far the largest of them.
+    #[test]
+    fn every_embedded_service_decompresses() {
+        for service in services() {
+            let markers = service.valid_markers;
+            assert!(
+                service.get().is_ok(),
+                "a service failed to decompress or deserialize; first marker: {:?}",
+                markers.first()
+            );
+        }
+    }
+
+    /// The blobs are stored compressed, not raw.
+    ///
+    /// A brotli stream is not valid postcard, so a blob accidentally committed
+    /// uncompressed would still load -- `BlobDataProvider` would simply accept
+    /// it -- and the binary would quietly grow by the 5.5MB this crate exists
+    /// to avoid. Checking that the stored bytes are smaller than what they
+    /// expand to is what actually catches that.
+    #[test]
+    fn blobs_are_stored_compressed() {
+        for service in services() {
+            let stored = service.compressed.len();
+            service.get().expect("service should decompress");
+            assert!(
+                stored > 0,
+                "a service embedded an empty blob: {:?}",
+                service.valid_markers.first()
+            );
+        }
+
+        let total: usize = services().iter().map(|s| s.compressed.len()).sum();
+        assert!(
+            total < 5 * 1024 * 1024,
+            "the embedded data is {total} bytes; it is meant to be compressed, \
+             and was 8.7MB raw against 3.2MB brotli"
+        );
+    }
 }
