@@ -1,10 +1,11 @@
 name: Benchmarks
 
+# Manual. The benchmark run. Useful before a release, noise on every pull request.
+#
+# It was gated on `main` while this fork default branch is `master`, so it has
+# never run here anyway. Making that explicit rather than switching it on.
 on:
-  pull_request:
-    branches:
-      - main
-      - releases/**
+  workflow_dispatch:
 
 permissions:
   contents: read
