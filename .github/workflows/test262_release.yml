@@ -6,7 +6,10 @@ on:
       - published
   push:
     branches:
-      - main
+      # `master`, not `main`. This fork renamed its default branch and the
+      # trigger did not follow, so the published conformance results have not
+      # been refreshed since the fork was made.
+      - master
 
 permissions:
   contents: read

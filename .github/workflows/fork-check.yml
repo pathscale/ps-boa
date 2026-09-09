@@ -1,0 +1,72 @@
+name: Fork check
+
+# The one automatic gate, and deliberately small.
+#
+# Upstream's `rust.yml` runs twelve jobs including coverage, miri,
+# cross-compilation, fuzz builds and a semver check. That is upstream's contract
+# with its own contributors. This fork's local diff is a handful of manifests
+# plus the runtime classes we have added, and the thing that actually exercises
+# it is the browser engine that embeds it, against real sites.
+#
+# So the heavy workflows are manual now. This is what remains automatic: does
+# the fork build, is it formatted, does clippy pass on the crates we changed,
+# and do our own tests still run. Three or four minutes, and it would have
+# caught the `syn` 3.0.4 bump that breaks `ps-boa-macros`.
+#
+# Delete this rather than let it grow. The moment it starts matching upstream's
+# matrix it has stopped earning its place.
+
+on:
+  pull_request:
+    branches:
+      - master
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build, lint and test
+    runs-on: ubicloud-standard-4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # The whole workspace has to compile: a manifest bump that breaks a crate
+      # nobody here touches still breaks the publish, which goes out bottom-up
+      # as one set.
+      - name: Build
+        run: cargo check --workspace --all-targets
+
+      # Clippy on what this fork actually carries, and warnings stay warnings.
+      #
+      # `-D warnings` was tried both ways, as `RUSTFLAGS` and as `-- -D
+      # warnings`, and both reach workspace path dependencies: each failed on
+      # five pre-existing `assert!`-with-equality lints in `ps-boa-gc`, upstream
+      # code this fork does not touch. Denying warnings here would mean either
+      # diverging from upstream to satisfy a lint or teaching everyone to ignore
+      # a red gate, and the second always wins. Clippy still fails the step on a
+      # real error.
+      - name: Lint the crates this fork changes
+        run: cargo clippy -p ps-boa-runtime -p ps-boa-engine --all-targets
+
+      - name: Test
+        run: cargo test -p ps-boa-runtime -p ps-boa-engine

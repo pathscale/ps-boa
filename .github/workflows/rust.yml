@@ -1,16 +1,21 @@
 name: Continuous integration
 
+# Manual, and gated on the right branch when it is run.
+#
+# The triggers here said `main`. This fork's default branch is `master`, renamed
+# when it was made, so nothing in this file has ever run on a pull request or a
+# push. Two releases shipped on local verification alone before that was noticed.
+#
+# Rather than switch the branch and inherit all twelve jobs on every change,
+# this is manual. Coverage, miri, cross-compilation, fuzz builds and a semver
+# check are upstream's contract with its own contributors; this fork's local diff
+# is a handful of manifests plus one runtime class, and it is exercised by the
+# browser engine that embeds it against real sites, which is a harder test than
+# the matrix.
+#
+# Run it by hand before a release, or when a change reaches into the engine
+# rather than the packaging.
 on:
-  pull_request:
-    branches:
-      - main
-      - releases/**
-  push:
-    branches:
-      - main
-      - releases/**
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
