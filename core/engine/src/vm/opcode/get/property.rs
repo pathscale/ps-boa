@@ -63,6 +63,10 @@ fn get_by_name<const LENGTH: bool>(
     drop(object_borrowed);
 
     let key: PropertyKey = ic.name.clone().into();
+    // A getter may add, remove or redefine a property on its receiver. Cache
+    // the slot against the shape that was actually searched, not the shape
+    // left behind after user code returns.
+    let lookup_shape = object.borrow().shape().clone();
 
     let context = &mut InternalMethodPropertyContext::new(context);
     let result = object.__get__(&key, receiver.clone(), context)?;
@@ -71,9 +75,7 @@ fn get_by_name<const LENGTH: bool>(
     let slot = *context.slot();
     if slot.is_cacheable() {
         let ic = &context.vm.frame().code_block.ic[usize::from(index)];
-        let object_borrowed = object.borrow();
-        let shape = object_borrowed.shape();
-        ic.set(shape, slot);
+        ic.set(&lookup_shape, slot);
     }
 
     context.vm.set_register(dst.into(), result);

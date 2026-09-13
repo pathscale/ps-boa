@@ -84,6 +84,10 @@ impl GetNameGlobal {
             drop(object_borrowed);
 
             let key: PropertyKey = ic.name.clone().into();
+            // A global accessor can mutate the global object while it runs.
+            // Associate the resolved slot with the shape that was searched,
+            // rather than the possibly different shape user code leaves.
+            let lookup_shape = object.borrow().shape().clone();
 
             let context = &mut InternalMethodPropertyContext::new(context);
             let Some(result) = object.__try_get__(&key, object.clone().into(), context)? else {
@@ -97,9 +101,7 @@ impl GetNameGlobal {
             let slot = *context.slot();
             if slot.is_cacheable() {
                 let ic = &context.vm.frame().code_block.ic[usize::from(ic_index)];
-                let object_borrowed = object.borrow();
-                let shape = object_borrowed.shape();
-                ic.set(shape, slot);
+                ic.set(&lookup_shape, slot);
             }
 
             context.vm.set_register(dst.into(), result);
