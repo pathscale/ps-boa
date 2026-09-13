@@ -1,15 +1,9 @@
-name: Update Test262 Results
+name: Update Test262 Results (Manual)
 
+# This expensive conformance run writes its results to boa-dev/data. Start it
+# manually on the ref to test, with DATA_PAT configured for that external write.
 on:
-  release:
-    types:
-      - published
-  push:
-    branches:
-      # `master`, not `main`. This fork renamed its default branch and the
-      # trigger did not follow, so the published conformance results have not
-      # been refreshed since the fork was made.
-      - master
+  workflow_dispatch:
 
 permissions:
   contents: read
