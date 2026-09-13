@@ -382,6 +382,137 @@ fn get_property_by_name_set_inline_cache_on_property_load() -> JsResult<()> {
 }
 
 #[test]
+fn unique_shape_insert_invalidates_a_cached_prototype_getter() -> JsResult<()> {
+    let context = &mut Context::default();
+    let prototype = context
+        .eval(Source::from_bytes(
+            "({ get memo() { \
+                Object.defineProperty(this, 'memo', { value: 42 }); \
+                return this.memo; \
+              } })",
+        ))?
+        .as_object()
+        .expect("the object literal produces an object")
+        .clone();
+    let object = JsObject::from_proto_and_data(Some(prototype), OrdinaryObject);
+    let reader = context.eval(Source::from_bytes("(object) => object.memo"))?;
+    let reader = reader
+        .as_object()
+        .expect("the arrow function is callable")
+        .clone();
+
+    assert_eq!(
+        reader.call(&JsValue::undefined(), &[object.clone().into()], context)?,
+        JsValue::from(42)
+    );
+    assert_eq!(
+        reader.call(&JsValue::undefined(), &[object.into()], context)?,
+        JsValue::from(42)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn getter_mutation_does_not_poison_the_inline_cache() -> JsResult<()> {
+    let context = &mut Context::default();
+    let callback = context.eval(Source::from_bytes(
+        "(() => { \
+            let getterCalls = 0; \
+            class Fixture { \
+              get value() { \
+                getterCalls++; \
+                Object.defineProperty(this, 'value', { value: 42, configurable: true }); \
+                return 42; \
+              } \
+            } \
+            const fixture = new Fixture(); \
+            return () => { fixture.value; return getterCalls; }; \
+          })()",
+    ))?;
+    let callback = callback
+        .as_object()
+        .expect("the outer function returns a callback")
+        .clone();
+
+    for _ in 0..2 {
+        assert_eq!(
+            callback.call(&JsValue::undefined(), &[], context)?,
+            JsValue::from(1)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn getter_mutation_does_not_poison_a_reentrant_inline_cache() -> JsResult<()> {
+    let context = &mut Context::default();
+    context.eval(Source::from_bytes(
+        "let getterCalls = 0; \
+         let listener; \
+         class Fixture { \
+           get value() { \
+             getterCalls++; \
+             Object.defineProperty(this, 'value', { value: 42 }); \
+             return this.value; \
+           } \
+           attach() { \
+             listener = () => this.value; \
+           } \
+         } \
+         const field = { \
+           addEventListener(_, callback) { listener = callback; }, \
+           dispatchEvent() { listener(); }, \
+         }; \
+         const fixture = new Fixture(); \
+         fixture.attach(field); \
+         field.addEventListener('input', listener);",
+    ))?;
+
+    assert_eq!(
+        context.eval(Source::from_bytes("field.dispatchEvent(); getterCalls"))?,
+        JsValue::from(1)
+    );
+    assert_eq!(
+        context.eval(Source::from_bytes("field.dispatchEvent(); getterCalls"))?,
+        JsValue::from(1)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn global_getter_mutation_does_not_poison_the_inline_cache() -> JsResult<()> {
+    let context = &mut Context::default();
+    context.eval(Source::from_bytes(
+        "var getterCalls = 0; \
+         Object.defineProperty(globalThis, 'memo', { \
+           configurable: true, \
+           get() { \
+             getterCalls++; \
+             Object.defineProperty(globalThis, 'memo', { value: 42, configurable: true }); \
+             return 42; \
+           } \
+         });",
+    ))?;
+    let callback = context.eval(Source::from_bytes("() => { memo; return getterCalls; }"))?;
+    let callback = callback
+        .as_object()
+        .expect("the outer function returns a callback")
+        .clone();
+
+    for _ in 0..2 {
+        assert_eq!(
+            callback.call(&JsValue::undefined(), &[], context)?,
+            JsValue::from(1)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_polymorphic_inline_cache() -> JsResult<()> {
     let context = &mut Context::default();
     let function = context.eval(Source::from_bytes("(function (o) { return o.test; })"))?;

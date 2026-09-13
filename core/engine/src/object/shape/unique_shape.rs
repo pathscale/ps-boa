@@ -64,10 +64,15 @@ impl UniqueShape {
     }
 
     /// Inserts a new property into the [`UniqueShape`].
+    ///
+    /// This returns a new shape so inline caches holding the old shape cannot
+    /// keep using a prototype slot after the object acquires an own property.
     pub(crate) fn insert_property_transition(&self, key: TransitionKey) -> Self {
         let mut property_table = self.property_table().borrow_mut();
         property_table.insert(key.property_key, key.attributes);
-        self.clone()
+        let property_table = std::mem::take(&mut *property_table);
+        let prototype = self.inner.prototype.borrow_mut().take();
+        Self::new(prototype, property_table)
     }
 
     /// Remove a property from the [`UniqueShape`].
