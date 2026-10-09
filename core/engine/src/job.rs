@@ -871,9 +871,11 @@ pub struct SimpleJobExecutor {
     promise_jobs: RefCell<VecDeque<PromiseJob>>,
     async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
     finalization_registry_jobs: RefCell<VecDeque<NativeAsyncJob>>,
-    clock_jobs: RefCell<BTreeMap<JsInstant, Vec<ClockJob>>>,
+    clock_jobs: RefCell<BTreeMap<JsInstant, VecDeque<ClockJob>>>,
     generic_jobs: RefCell<VecDeque<GenericJob>>,
     stop: Arc<AtomicBool>,
+    deadline: Cell<Option<time::Instant>>,
+    executed_jobs: Cell<u64>,
 }
 
 impl SimpleJobExecutor {
@@ -906,6 +908,73 @@ impl SimpleJobExecutor {
         Arc::clone(&self.stop)
     }
 
+    /// Runs jobs until the budget expires between jobs.
+    ///
+    /// Unstarted jobs remain queued in their original order. A single job
+    /// cannot be preempted. Native async jobs already being polled must finish
+    /// before this call returns: their futures borrow the context, so dropping
+    /// them at a slice boundary would cancel work. Promise jobs continue to
+    /// run while those futures are pending, retaining the ordinary executor's
+    /// ability to resolve promises awaited by native async jobs.
+    ///
+    /// Calling `run_jobs` without this method retains the unbounded drain.
+    pub fn run_jobs_with_budget(
+        self: Rc<Self>,
+        context: &mut Context,
+        budget: time::Duration,
+    ) -> JsResult<()> {
+        let deadline = time::Instant::now() + budget;
+        let previous = self.deadline.get();
+        self.deadline
+            .set(Some(previous.map_or(deadline, |outer| outer.min(deadline))));
+        let result = Rc::clone(&self).run_jobs(context);
+        self.deadline.set(previous);
+        result
+    }
+
+    /// Whether jobs can make progress immediately.
+    ///
+    /// Future clock jobs and finalization cleanup alone do not count.
+    #[must_use]
+    pub fn has_pending_jobs(&self, context: &Context) -> bool {
+        !self.promise_jobs.borrow().is_empty()
+            || !self.async_jobs.borrow().is_empty()
+            || !self.generic_jobs.borrow().is_empty()
+            || self
+                .clock_jobs
+                .borrow()
+                .range(..=context.clock().now())
+                .any(|(_, jobs)| jobs.iter().any(|job| !job.cancelled()))
+    }
+
+    /// Time until the next uncancelled timeout or interval.
+    #[must_use]
+    pub fn next_job_timeout(&self, context: &Context) -> Option<time::Duration> {
+        let now = context.clock().now();
+        self.clock_jobs
+            .borrow()
+            .iter()
+            .find(|(_, jobs)| jobs.iter().any(|job| !job.cancelled()))
+            .map(|(deadline, _)| (*deadline - now).into())
+    }
+
+    /// Number of jobs started, including native async jobs.
+    #[must_use]
+    pub fn executed_job_count(&self) -> u64 {
+        self.executed_jobs.get()
+    }
+
+    fn record_job(&self) {
+        self.executed_jobs
+            .set(self.executed_jobs.get().wrapping_add(1));
+    }
+
+    fn budget_exhausted(&self) -> bool {
+        self.deadline
+            .get()
+            .is_some_and(|deadline| time::Instant::now() >= deadline)
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.promise_jobs.borrow().is_empty()
             && self.async_jobs.borrow().is_empty()
@@ -925,7 +994,7 @@ impl JobExecutor for SimpleJobExecutor {
                     .borrow_mut()
                     .entry(now + t.timeout())
                     .or_default()
-                    .push(ClockJob::Timeout(t));
+                    .push_back(ClockJob::Timeout(t));
             }
             Job::IntervalJob(i) => {
                 let now = context.clock().now();
@@ -933,7 +1002,7 @@ impl JobExecutor for SimpleJobExecutor {
                     .borrow_mut()
                     .entry(now + i.interval())
                     .or_default()
-                    .push(ClockJob::Interval(i));
+                    .push_back(ClockJob::Interval(i));
             }
             Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
             Job::FinalizationRegistryCleanupJob(fr) => {
@@ -959,7 +1028,12 @@ impl JobExecutor for SimpleJobExecutor {
                 return Ok(());
             }
 
+            if group.is_empty() && self.budget_exhausted() {
+                break;
+            }
+
             for job in mem::take(&mut *self.async_jobs.borrow_mut()) {
+                self.record_job();
                 group.insert(job.call(context));
             }
 
@@ -967,10 +1041,11 @@ impl JobExecutor for SimpleJobExecutor {
                 fr_group.insert(job.call(context));
             }
 
-            // Dispatch all past-due timeout jobs before the termination check.
+            // Snapshot past-due jobs so a zero-length interval is rescheduled
+            // for a later round, as in the unbounded executor.
             {
                 let now = context.borrow().clock().now();
-                let jobs_to_run = {
+                let mut jobs_to_run = {
                     let mut timeout_jobs = self.clock_jobs.borrow_mut();
                     let mut jobs_to_keep = timeout_jobs.split_off(&now);
                     jobs_to_keep.retain(|_, jobs| {
@@ -980,9 +1055,22 @@ impl JobExecutor for SimpleJobExecutor {
                     mem::replace(&mut *timeout_jobs, jobs_to_keep)
                 };
 
-                for jobs in jobs_to_run.into_values() {
-                    for job in jobs {
+                while let Some((deadline, mut jobs)) = jobs_to_run.pop_first() {
+                    while !jobs.is_empty() {
+                        if group.is_empty() && self.budget_exhausted() {
+                            jobs_to_run.insert(deadline, jobs);
+                            let mut queued = self.clock_jobs.borrow_mut();
+                            for (deadline, mut remaining) in jobs_to_run {
+                                if let Some(mut newer) = queued.remove(&deadline) {
+                                    remaining.append(&mut newer);
+                                }
+                                queued.insert(deadline, remaining);
+                            }
+                            return Ok(());
+                        }
+                        let job = jobs.pop_front().expect("the clock batch is not empty");
                         if !job.cancelled() {
+                            self.record_job();
                             match job {
                                 ClockJob::Timeout(job) => {
                                     if let Err(err) = job.call(&mut context.borrow_mut()) {
@@ -1001,7 +1089,7 @@ impl JobExecutor for SimpleJobExecutor {
                                         .borrow_mut()
                                         .entry(now + job.interval())
                                         .or_default()
-                                        .push(ClockJob::Interval(job));
+                                        .push_back(ClockJob::Interval(job));
                                 }
                             }
                         }
@@ -1025,16 +1113,35 @@ impl JobExecutor for SimpleJobExecutor {
                 return Err(err);
             }
 
-            let jobs = mem::take(&mut *self.promise_jobs.borrow_mut());
-            for job in jobs {
+            let mut jobs = mem::take(&mut *self.promise_jobs.borrow_mut());
+            while !jobs.is_empty() {
+                if group.is_empty() && self.budget_exhausted() {
+                    let mut queued = self.promise_jobs.borrow_mut();
+                    // The unfinished batch precedes jobs enqueued by the
+                    // callbacks that already ran. Moving preserves FIFO and
+                    // keeps every captured value rooted.
+                    jobs.append(&mut *queued);
+                    *queued = jobs;
+                    return Ok(());
+                }
+                let job = jobs.pop_front().expect("the promise batch is not empty");
+                self.record_job();
                 if let Err(err) = job.call(&mut context.borrow_mut()) {
                     self.clear();
                     return Err(err);
                 }
             }
 
-            let jobs = mem::take(&mut *self.generic_jobs.borrow_mut());
-            for job in jobs {
+            let mut jobs = mem::take(&mut *self.generic_jobs.borrow_mut());
+            while !jobs.is_empty() {
+                if group.is_empty() && self.budget_exhausted() {
+                    let mut queued = self.generic_jobs.borrow_mut();
+                    jobs.append(&mut *queued);
+                    *queued = jobs;
+                    return Ok(());
+                }
+                let job = jobs.pop_front().expect("the generic batch is not empty");
+                self.record_job();
                 if let Err(err) = job.call(&mut context.borrow_mut()) {
                     self.clear();
                     return Err(err);
