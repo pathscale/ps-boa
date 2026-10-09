@@ -293,6 +293,15 @@ impl ArrayBuffer {
         Ok(())
     }
 
+    /// Whether an attached buffer can be detached using this key.
+    ///
+    /// Hosts serializing transfer lists use this before moving any allocation,
+    /// so a rejected entry cannot partially detach earlier entries.
+    #[must_use]
+    pub fn can_detach(&self, key: &JsValue) -> bool {
+        self.data.is_some() && JsValue::same_value(&self.detach_key, key)
+    }
+
     /// Detaches the inner data of this `ArrayBuffer`, returning the original buffer if still
     /// present.
     ///

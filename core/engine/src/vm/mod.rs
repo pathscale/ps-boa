@@ -82,6 +82,8 @@ pub struct Vm {
     /// This eliminates the conversion between [`crate::JsNativeError`] and [`crate::JsValue`] if not needed.
     pub(crate) pending_exception: Option<JsError>,
     pub(crate) runtime_limits: RuntimeLimits,
+    /// Host cancellation shared with the context's owning worker.
+    pub(crate) interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 
     /// This is used to assign a native (rust) function as the active function,
     /// because we don't push a frame for them.
@@ -418,6 +420,7 @@ impl Vm {
             return_value: JsValue::undefined(),
             pending_exception: None,
             runtime_limits: RuntimeLimits::default(),
+            interrupt_flag: None,
             native_active_function: None,
             host_call_depth: 0,
             shadow_stack: ShadowStack::default(),
@@ -767,6 +770,17 @@ impl Context {
 }
 
 impl Context {
+    /// Install host cancellation checked before each VM instruction.
+    ///
+    /// Interruption is an uncatchable engine error. It also covers VM
+    /// re-entry from native calls, module evaluation and promise callbacks.
+    pub fn set_interrupt_flag(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.vm.interrupt_flag = Some(flag);
+    }
+
     fn execute_instruction<F>(&mut self, f: F, opcode: Opcode) -> ControlFlow<CompletionRecord>
     where
         F: FnOnce(&mut Context, Opcode) -> ControlFlow<CompletionRecord>,
@@ -778,6 +792,15 @@ impl Context {
     where
         F: FnOnce(&mut Context, Opcode) -> ControlFlow<CompletionRecord>,
     {
+        if self
+            .vm
+            .interrupt_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return self.handle_error(RuntimeLimitError::Interrupted.into());
+        }
+
         #[cfg(feature = "fuzz")]
         {
             use crate::error::EngineError;
