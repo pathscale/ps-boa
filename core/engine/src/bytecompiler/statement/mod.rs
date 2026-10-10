@@ -65,6 +65,25 @@ impl ByteCompiler<'_> {
                 self.compile_switch(switch, use_expr);
             }
             Statement::Return(ret) => {
+                // With only environments to pop on the way out (no finally block or iterator to
+                // close that could run code), the value goes straight to the accumulator.
+                if !self.is_async_generator()
+                    && self
+                        .return_jump_record_actions()
+                        .iter()
+                        .all(|action| matches!(action, JumpRecordAction::PopEnvironments { .. }))
+                {
+                    match ret.target() {
+                        Some(expr) => self.compile_expr_operand(expr, |compiler, value| {
+                            compiler.bytecode.emit_set_accumulator(value);
+                        }),
+                        None => self
+                            .bytecode
+                            .emit_set_accumulator(CallFrame::undefined_register().variable()),
+                    }
+                    self.r#return(false);
+                    return;
+                }
                 if let Some(expr) = ret.target() {
                     if self.is_async_generator() {
                         let value = self.register_allocator.alloc();
