@@ -12,6 +12,50 @@ use crate::{
 };
 use boa_macros::js_str;
 
+/// An inline cache hit for an own data property: stores the value without taking a reference to
+/// the object. Returns `false` when the slow path must run.
+#[inline(always)]
+fn cached_set_own(
+    value: RegisterOperand,
+    object: RegisterOperand,
+    index: IndexOperand,
+    context: &Context,
+) -> bool {
+    let Some(object) = context.vm.get_register(object.into()).as_object_ref() else {
+        return false;
+    };
+    let ic = &context.vm.frame().code_block().ic[usize::from(index)];
+    let mut object_borrowed = object.borrow_mut();
+    let Some((_, slot)) = ic.get(object_borrowed.shape()) else {
+        return false;
+    };
+    if slot.attributes.is_accessor_descriptor()
+        || slot.attributes.contains(SlotAttributes::PROTOTYPE)
+    {
+        return false;
+    }
+    object_borrowed.properties_mut().storage[slot.index as usize] =
+        context.vm.get_register(value.into()).clone();
+    true
+}
+
+/// Stores a dense element of an extensible array without taking a reference to the array.
+/// Returns `false` when the slow path must run.
+#[inline(always)]
+fn dense_array_set(object: &JsValue, index: u32, value: &JsValue) -> bool {
+    let Some(object) = object.as_object_ref() else {
+        return false;
+    };
+    if !object.is_array() {
+        return false;
+    }
+    let mut object_borrowed = object.borrow_mut();
+    object_borrowed.extensible
+        && object_borrowed
+            .properties_mut()
+            .set_dense_property(index, value)
+}
+
 fn set_by_name(
     value: RegisterOperand,
     value_object: &JsValue,
@@ -96,6 +140,9 @@ impl SetPropertyByName {
         (value, object, index): (RegisterOperand, RegisterOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
+        if cached_set_own(value, object, index, context) {
+            return Ok(());
+        }
         let object = context.vm.get_register(object.into()).clone();
         set_by_name(value, &object, &object, index, context)
     }
@@ -171,6 +218,17 @@ impl SetPropertyByValue {
             typed_array_set_element(&base, f64::from(index), &value, &mut context.into())?;
             return Ok(());
         }
+        // Fast path: a dense array element, as below, before any clone or key conversion.
+        if let Some(index) = context.vm.get_register(key.into()).as_i32()
+            && let Ok(index) = u32::try_from(index)
+            && dense_array_set(
+                context.vm.get_register(object.into()),
+                index,
+                context.vm.get_register(value.into()),
+            )
+        {
+            return Ok(());
+        }
 
         let value = context.vm.get_register(value.into()).clone();
         let key = context.vm.get_register(key.into()).clone();
@@ -238,6 +296,13 @@ impl SetPropertyByIndex {
         context: &mut Context,
     ) -> JsResult<()> {
         let index = u32::from(index);
+        if dense_array_set(
+            context.vm.get_register(object.into()),
+            index,
+            context.vm.get_register(value.into()),
+        ) {
+            return Ok(());
+        }
         let value = context.vm.get_register(value.into()).clone();
         let base = context.vm.get_register(object.into()).clone();
 
