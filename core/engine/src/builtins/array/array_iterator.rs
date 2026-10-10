@@ -187,7 +187,22 @@ impl ArrayIterator {
         match array_iterator.kind {
             PropertyNameKind::Key => Ok((index.into(), false)),
             PropertyNameKind::Value => {
-                let element_value = array_iterator.array.get(index, context)?;
+                // A present dense element of an array is exactly what `Get` would return.
+                let dense = if array_iterator.array.is_array() {
+                    u32::try_from(index).ok().and_then(|index| {
+                        array_iterator
+                            .array
+                            .borrow()
+                            .properties()
+                            .get_dense_property(index)
+                    })
+                } else {
+                    None
+                };
+                let element_value = match dense {
+                    Some(value) => value,
+                    None => array_iterator.array.get(index, context)?,
+                };
                 Ok((element_value, false))
             }
             PropertyNameKind::KeyAndValue => {
