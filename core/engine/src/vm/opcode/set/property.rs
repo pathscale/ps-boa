@@ -224,6 +224,60 @@ impl Operation for SetPropertyByValue {
     const COST: u8 = 4;
 }
 
+/// `SetPropertyByIndex` implements the Opcode Operation for `Opcode::SetPropertyByIndex`
+///
+/// Operation:
+///  - Sets a property by a constant array index of an object, like `object[0] = value`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SetPropertyByIndex;
+
+impl SetPropertyByIndex {
+    #[inline(always)]
+    pub(crate) fn operation(
+        (value, object, index): (RegisterOperand, RegisterOperand, IndexOperand),
+        context: &mut Context,
+    ) -> JsResult<()> {
+        let index = u32::from(index);
+        let value = context.vm.get_register(value.into()).clone();
+        let base = context.vm.get_register(object.into()).clone();
+
+        // Fast paths, as in `SetPropertyByValue` (the receiver is the object itself).
+        if let Some(object) = base.as_object() {
+            if object.is::<TypedArray>() {
+                typed_array_set_element(&object, f64::from(index), &value, &mut context.into())?;
+                return Ok(());
+            }
+            if object.is_array() {
+                let mut object_borrowed = object.borrow_mut();
+                if object_borrowed.extensible
+                    && object_borrowed
+                        .properties_mut()
+                        .set_dense_property(index, &value)
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Slow path:
+        let object = base.to_object(context)?;
+        let key = PropertyKey::from(index);
+        let succeeded = object.__set__(key.clone(), value, base, &mut context.into())?;
+        if !succeeded && context.vm.frame().code_block.strict() {
+            return Err(JsNativeError::typ()
+                .with_message(format!("cannot set non-writable property: {key}"))
+                .into());
+        }
+        Ok(())
+    }
+}
+
+impl Operation for SetPropertyByIndex {
+    const NAME: &'static str = "SetPropertyByIndex";
+    const INSTRUCTION: &'static str = "INST - SetPropertyByIndex";
+    const COST: u8 = 3;
+}
+
 /// `SetPropertyGetterByName` implements the Opcode Operation for `Opcode::SetPropertyGetterByName`
 ///
 /// Operation:

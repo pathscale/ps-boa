@@ -682,6 +682,16 @@ impl CodeBlock {
                 let ic = &self.ic[u32::from(*ic_index) as usize];
                 format!("object:{object}, receiver:{receiver}, value:{value}, ic:{ic}")
             }
+            Instruction::GetPropertyByIndex { dst, object, index } => {
+                format!("dst:{dst}, object:{object}, index:{index}")
+            }
+            Instruction::SetPropertyByIndex {
+                value,
+                object,
+                index,
+            } => {
+                format!("value:{value}, object:{object}, index:{index}")
+            }
             Instruction::GetPropertyByValue {
                 dst,
                 key,
@@ -931,9 +941,7 @@ impl CodeBlock {
             | Instruction::Reserved54
             | Instruction::Reserved55
             | Instruction::Reserved56
-            | Instruction::Reserved57
-            | Instruction::Reserved58
-            | Instruction::Reserved59 => unreachable!("Reserved opcodes are unreachable"),
+            | Instruction::Reserved57 => unreachable!("Reserved opcodes are unreachable"),
         }
     }
 }
