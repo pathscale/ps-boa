@@ -1325,7 +1325,7 @@ impl<'ctx> ByteCompiler<'ctx> {
                 });
             }
             None => {
-                self.compile_expr_operand(binary.lhs(), |compiler, lhs| {
+                self.compile_expr_operand_before(binary.lhs(), binary.rhs(), |compiler, lhs| {
                     compiler.compile_expr_operand(binary.rhs(), |compiler, rhs| {
                         label_index = compiler.next_opcode_location();
                         emit_fn(&mut compiler.bytecode, Self::DUMMY_ADDRESS, lhs, rhs);
@@ -1811,6 +1811,25 @@ impl<'ctx> ByteCompiler<'ctx> {
             Expression::Parenthesized(expr) => Self::assigns_nothing(expr.expression()),
             _ => false,
         }
+    }
+
+    /// [`Self::compile_expr_operand`] for an operand evaluated before `then`: a register-held
+    /// binding is read in place only when evaluating `then` cannot assign it, so `a + (a = 5)`
+    /// still adds the old `a`.
+    pub(crate) fn compile_expr_operand_before(
+        &mut self,
+        expr: &Expression,
+        then: &Expression,
+        inner_fn: impl FnOnce(&mut Self, RegisterOperand),
+    ) {
+        if Self::assigns_nothing(then) {
+            self.compile_expr_operand(expr, inner_fn);
+            return;
+        }
+        let reg = self.register_allocator.alloc();
+        self.compile_expr(expr, &reg);
+        inner_fn(self, reg.variable());
+        self.register_allocator.dealloc(reg);
     }
 
     pub(crate) fn compile_expr_operand(
