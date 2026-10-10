@@ -232,6 +232,17 @@ impl Stack {
         self.stack.split_off(index)
     }
 
+    /// [`Self::calling_convention_pop_arguments`] into `out`, which a native call keeps on the
+    /// Rust stack for a few arguments instead of allocating.
+    pub(crate) fn calling_convention_pop_arguments_into(
+        &mut self,
+        argument_count: usize,
+        out: &mut impl Extend<JsValue>,
+    ) {
+        let index = self.stack.len() - argument_count;
+        out.extend(self.stack.drain(index..));
+    }
+
     /// Push the function arguments according to the calling convention.
     /// This will push the given values onto the stack.
     pub(crate) fn calling_convention_push_arguments(&mut self, values: &[JsValue]) {
