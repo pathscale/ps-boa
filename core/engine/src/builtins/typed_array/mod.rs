@@ -36,7 +36,7 @@ pub(crate) use builtin::{BuiltinTypedArray, is_valid_integer_index};
 pub(crate) use element::Float16;
 pub(crate) use element::{Atomic, ClampedU8, Element};
 pub use object::TypedArray;
-pub(crate) use object::typed_array_get_element;
+pub(crate) use object::{typed_array_get_element, typed_array_set_element};
 
 pub(crate) trait TypedArrayMarker {
     type Element: Element;

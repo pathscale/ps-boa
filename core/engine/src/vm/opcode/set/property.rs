@@ -5,6 +5,7 @@ use crate::vm::opcode::{IndexOperand, RegisterOperand};
 use crate::{
     Context, JsNativeError, JsResult,
     builtins::function::set_function_name,
+    builtins::typed_array::{TypedArray, typed_array_set_element},
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::{PropertyDescriptor, PropertyKey},
     vm::opcode::Operation,
@@ -154,6 +155,23 @@ impl SetPropertyByValue {
         ),
         context: &mut Context,
     ) -> JsResult<()> {
+        // Fast path: a non-negative int32 key stored on a typed array that is its own receiver is
+        // TypedArraySetElement, before any property key conversion.
+        if let Some(index) = context.vm.get_register(key.into()).as_i32()
+            && index >= 0
+            && let Some(base) = context.vm.get_register(object.into()).as_object()
+            && base.is::<TypedArray>()
+            && context
+                .vm
+                .get_register(receiver.into())
+                .as_object()
+                .is_some_and(|r| r == base)
+        {
+            let value = context.vm.get_register(value.into()).clone();
+            typed_array_set_element(&base, f64::from(index), &value, &mut context.into())?;
+            return Ok(());
+        }
+
         let value = context.vm.get_register(value.into()).clone();
         let key = context.vm.get_register(key.into()).clone();
         let receiver = context.vm.get_register(receiver.into()).clone();
