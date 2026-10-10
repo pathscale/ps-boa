@@ -117,6 +117,21 @@ pub use boa_macros::js_value;
 #[derive(Finalize, Debug, Clone, Trace)]
 pub struct JsValue(inner::InnerValue);
 
+/// A [`JsObject`] borrowed from a [`JsValue`], sharing its reference instead of taking a new one.
+pub(crate) struct JsObjectRef<'a>(
+    std::mem::ManuallyDrop<JsObject>,
+    std::marker::PhantomData<&'a JsValue>,
+);
+
+impl std::ops::Deref for JsObjectRef<'_> {
+    type Target = JsObject;
+
+    #[inline]
+    fn deref(&self) -> &JsObject {
+        &self.0
+    }
+}
+
 impl JsValue {
     /// Create a new [`JsValue`] from an inner value.
     #[inline]
@@ -321,6 +336,15 @@ impl JsValue {
     #[must_use]
     pub fn as_object(&self) -> Option<JsObject> {
         self.0.as_object()
+    }
+
+    /// Borrows the inner object if the value is an object, without touching its reference count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn as_object_ref(&self) -> Option<JsObjectRef<'_>> {
+        self.0
+            .as_object_ref()
+            .map(|object| JsObjectRef(object, std::marker::PhantomData))
     }
 
     /// Consumes the value and return the inner object if it was an object.

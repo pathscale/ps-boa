@@ -237,6 +237,19 @@ impl EnumBasedValue {
         }
     }
 
+    /// Returns the value as a [`JsObject`] sharing this value's reference, valid while `self` is.
+    #[must_use]
+    #[inline]
+    pub(crate) fn as_object_ref(&self) -> Option<std::mem::ManuallyDrop<JsObject>> {
+        match self {
+            // SAFETY: the copy is never dropped, so the reference count stays owned by `self`.
+            Self::Object(value) => Some(std::mem::ManuallyDrop::new(unsafe {
+                std::ptr::read(value)
+            })),
+            _ => None,
+        }
+    }
+
     /// Returns the value as a boxed `[JsObject]`.
     #[must_use]
     #[inline]
