@@ -737,6 +737,22 @@ impl From<f64> for TypedArrayElement {
 
 impl From<TypedArrayElement> for JsValue {
     fn from(value: TypedArrayElement) -> Self {
+        // Integer elements that fit become int32 values, so arithmetic, bitwise operators and
+        // property keys on them take the integer paths instead of the float ones.
+        match value {
+            TypedArrayElement::Int8(value) => return Self::new(i32::from(value)),
+            TypedArrayElement::Uint8(value) => return Self::new(i32::from(value)),
+            TypedArrayElement::Uint8Clamped(value) => return Self::new(i32::from(value.0)),
+            TypedArrayElement::Int16(value) => return Self::new(i32::from(value)),
+            TypedArrayElement::Uint16(value) => return Self::new(i32::from(value)),
+            TypedArrayElement::Int32(value) => return Self::new(value),
+            TypedArrayElement::Uint32(value) => {
+                if let Ok(value) = i32::try_from(value) {
+                    return Self::new(value);
+                }
+            }
+            _ => {}
+        }
         match value {
             TypedArrayElement::Int8(value) => Numeric::from(value),
             TypedArrayElement::Uint8(value) => Numeric::from(value),
