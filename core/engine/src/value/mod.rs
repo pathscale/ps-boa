@@ -1070,6 +1070,13 @@ impl JsValue {
 
             // We also inline the call to `to_string`, removing the
             // double match against `self.variant()`.
+            // An integral float in index range stringifies to its digits (and
+            // -0 to "0"), so it is that index; skip formatting and re-parsing.
+            JsVariant::Float64(float)
+                if float >= 0.0 && float < f64::from(u32::MAX) && float.fract() == 0.0 =>
+            {
+                Ok((float as u32).into())
+            }
             JsVariant::Float64(float) => Ok(JsString::from(float).into()),
             JsVariant::Undefined => Ok(js_string!("undefined").into()),
             JsVariant::Null => Ok(js_string!("null").into()),
