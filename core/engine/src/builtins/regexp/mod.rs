@@ -26,7 +26,13 @@ use boa_gc::{Finalize, Trace};
 use boa_macros::{js_str, utf16};
 use boa_parser::lexer::regex::RegExpFlags;
 use regress::{Flags, Range, Regex};
-use std::str::FromStr;
+use std::{cell::RefCell, collections::HashMap, rc::Rc, str::FromStr};
+
+thread_local! {
+    /// Compiled matchers by source and flags, so a regular expression literal evaluated in a
+    /// loop compiles its pattern once.
+    static MATCHERS: RefCell<HashMap<(JsString, u8), Rc<Regex>>> = RefCell::default();
+}
 
 use super::{BuiltInBuilder, BuiltInConstructor, IntrinsicObject};
 
@@ -41,7 +47,7 @@ mod tests;
 #[boa_gc(unsafe_empty_trace)]
 pub struct RegExp {
     /// Regex matcher.
-    matcher: Regex,
+    matcher: Rc<Regex>,
     flags: RegExpFlags,
     original_source: JsString,
     original_flags: JsString,
@@ -351,6 +357,17 @@ impl RegExp {
         // 13. Let parseResult be ParsePattern(patternText, u, v).
         // 14. If parseResult is a non-empty List of SyntaxError objects, throw a SyntaxError exception.
 
+        if let Some(matcher) =
+            MATCHERS.with(|matchers| matchers.borrow().get(&(p.clone(), flags.bits())).cloned())
+        {
+            return Ok(RegExp {
+                matcher,
+                flags,
+                original_source: p,
+                original_flags: f,
+            });
+        }
+
         // If u or v flag is set, fullUnicode is true — compile as full codepoints.
         let full_unicode =
             flags.contains(RegExpFlags::UNICODE) || flags.contains(RegExpFlags::UNICODE_SETS);
@@ -393,6 +410,14 @@ impl RegExp {
         //     [[CapturingGroupsCount]]: capturingGroupsCount }.
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
+        let matcher = Rc::new(matcher);
+        MATCHERS.with(|matchers| {
+            let mut matchers = matchers.borrow_mut();
+            if matchers.len() >= 1024 {
+                matchers.clear();
+            }
+            matchers.insert((p.clone(), flags.bits()), matcher.clone());
+        });
         Ok(RegExp {
             matcher,
             flags,
