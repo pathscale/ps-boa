@@ -94,7 +94,10 @@ impl GetNameGlobal {
             Some(binding_locator)
         };
 
-        if binding_locator.as_ref().is_none_or(BindingLocator::is_global) {
+        if binding_locator
+            .as_ref()
+            .is_none_or(BindingLocator::is_global)
+        {
             let object = context.global_object();
 
             let ic = &context.vm.frame().code_block().ic[usize::from(ic_index)];

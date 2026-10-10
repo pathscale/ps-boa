@@ -445,14 +445,20 @@ impl IteratorRecord {
         if let Some(value) = self.fast_value.take() {
             let object = create_iter_result_object(value, false, context);
             self.last_result = Some(IteratorResult {
-                object: object.as_object().expect("iter result is an object").clone(),
+                object: object
+                    .as_object()
+                    .expect("iter result is an object")
+                    .clone(),
             });
         }
         if self.fast_done {
             self.fast_done = false;
             let object = create_iter_result_object(JsValue::undefined(), true, context);
             self.last_result = Some(IteratorResult {
-                object: object.as_object().expect("iter result is an object").clone(),
+                object: object
+                    .as_object()
+                    .expect("iter result is an object")
+                    .clone(),
             });
         }
         self.last_result.get_or_insert_with(|| IteratorResult {
