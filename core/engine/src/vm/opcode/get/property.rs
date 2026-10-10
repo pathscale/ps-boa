@@ -1,7 +1,9 @@
 use boa_string::StaticJsStrings;
 
 use crate::{
-    Context, JsResult, JsValue, js_string,
+    Context, JsResult, JsValue,
+    builtins::typed_array::{TypedArray, typed_array_get_element},
+    js_string,
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::PropertyKey,
     vm::opcode::{IndexOperand, Operation, RegisterOperand},
@@ -91,6 +93,26 @@ fn get_by_value<const PUSH_KEY: bool>(
     ),
     context: &mut Context,
 ) -> JsResult<()> {
+    // Fast path: a non-negative int32 key on an array's dense elements or on a typed array (whose
+    // [[Get]] for a valid integer index never reaches the prototype chain), before any clone or
+    // property key conversion.
+    if let Some(index) = context.vm.get_register(key.into()).as_i32()
+        && let Ok(index) = u32::try_from(index)
+        && let Some(base) = context.vm.get_register(object.into()).as_object()
+    {
+        let element = if base.is_array() {
+            base.borrow().properties().get_dense_property(index)
+        } else if base.is::<TypedArray>() {
+            Some(typed_array_get_element(&base, f64::from(index))?.unwrap_or_default())
+        } else {
+            None
+        };
+        if let Some(element) = element {
+            context.vm.set_register(dst.into(), element);
+            return Ok(());
+        }
+    }
+
     let key_value = context.vm.get_register(key.into()).clone();
     let base = context.vm.get_register(object.into()).clone();
     let object = base.base_class(context)?;
