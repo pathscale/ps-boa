@@ -407,6 +407,16 @@ impl IndexedProperties {
         }
     }
 
+    /// The number of elements in dense storage, or `None` if the storage is sparse.
+    pub(crate) fn dense_len(&self) -> Option<usize> {
+        match self {
+            Self::DenseI32(vec) => Some(vec.len()),
+            Self::DenseF64(vec) => Some(vec.len()),
+            Self::DenseElement(vec) => Some(vec.len()),
+            Self::SparseElement(_) | Self::SparseProperty(_) => None,
+        }
+    }
+
     /// Transform this array into a sparse array if it isn't so already.
     pub(crate) fn transform_to_sparse(&mut self) {
         match &*self {

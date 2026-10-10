@@ -133,6 +133,13 @@ impl JsObject {
         K: Into<PropertyKey>,
         V: Into<JsValue>,
     {
+        let key = key.into();
+        let value = value.into();
+        if let PropertyKey::Index(index) = &key
+            && Array::try_append_dense(self, u64::from(index.get()), &value, context)
+        {
+            return Ok(true);
+        }
         // 1. Assert: Type(O) is Object.
         // 2. Assert: IsPropertyKey(P) is true.
         // 3. Let newDesc be the PropertyDescriptor { [[Value]]: V, [[Writable]]: true, [[Enumerable]]: true, [[Configurable]]: true }.
@@ -143,7 +150,7 @@ impl JsObject {
             .configurable(true);
         // 4. Return ? O.[[DefineOwnProperty]](P, newDesc).
         self.__define_own_property__(
-            &key.into(),
+            &key,
             new_desc.into(),
             &mut InternalMethodPropertyContext::new(context),
         )
