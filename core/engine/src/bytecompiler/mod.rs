@@ -57,7 +57,7 @@ use boa_ast::{
     expression::{
         Call, Identifier, New, Optional, OptionalOperationKind,
         access::{PropertyAccess, PropertyAccessField},
-        literal::ObjectMethodDefinition,
+        literal::{LiteralKind, ObjectMethodDefinition},
         operator::{
             Binary,
             assign::AssignTarget,
@@ -1460,6 +1460,16 @@ impl<'ctx> ByteCompiler<'ctx> {
                             });
                             return;
                         }
+                        PropertyAccessField::Expr(expr) if let Some(index) = Self::const_index(expr) => {
+                            compiler.compile_expr_operand(access.target(), |compiler, object| {
+                                compiler.bytecode.emit_get_property_by_index(
+                                    dst.variable(),
+                                    object,
+                                    index.into(),
+                                );
+                            });
+                            return;
+                        }
                         PropertyAccessField::Expr(expr) if Self::assigns_nothing(expr) => {
                             compiler.compile_expr_operand(access.target(), |compiler, object| {
                                 compiler.compile_expr_operand(expr, |compiler, key| {
@@ -1590,6 +1600,17 @@ impl<'ctx> ByteCompiler<'ctx> {
                         self.compile_expr(access.target(), &object);
                         let value = expr_fn(self);
                         self.emit_set_property_by_name(value, None, &object, name.sym());
+                        self.register_allocator.dealloc(object);
+                    }
+                    PropertyAccessField::Expr(expr) if let Some(index) = Self::const_index(expr) => {
+                        let object = self.register_allocator.alloc();
+                        self.compile_expr(access.target(), &object);
+                        let value = expr_fn(self);
+                        self.bytecode.emit_set_property_by_index(
+                            value.variable(),
+                            object.variable(),
+                            index.into(),
+                        );
                         self.register_allocator.dealloc(object);
                     }
                     PropertyAccessField::Expr(expr) => {
@@ -1798,6 +1819,17 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// it allocates a temporary register and compiles into it.
     ///
     /// The `inner_fn` passed in will be called before the register get deallocated.
+    /// The array index a non-negative integer literal key such as the `0` in `object[0]` names.
+    pub(crate) fn const_index(expr: &Expression) -> Option<u32> {
+        match expr {
+            Expression::Literal(literal) => match literal.kind() {
+                LiteralKind::Int(index) => u32::try_from(*index).ok(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Returns `true` if evaluating `expr` cannot assign a register-held binding of this function:
     /// it is built only from literals, identifiers, `this` and operators that do not assign. Such
     /// bindings are never captured, so only a syntactic assignment here could change one.

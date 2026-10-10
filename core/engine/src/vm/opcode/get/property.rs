@@ -309,3 +309,58 @@ impl Operation for GetPropertyByValuePush {
     const INSTRUCTION: &'static str = "INST - GetPropertyByValuePush";
     const COST: u8 = 4;
 }
+
+/// `GetPropertyByIndex` implements the Opcode Operation for `Opcode::GetPropertyByIndex`
+///
+/// Operation:
+///  - Get a property by a constant array index from an object, like `object[0]`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GetPropertyByIndex;
+
+impl GetPropertyByIndex {
+    #[inline(always)]
+    pub(crate) fn operation(
+        (dst, object, index): (RegisterOperand, RegisterOperand, IndexOperand),
+        context: &mut Context,
+    ) -> JsResult<()> {
+        let index = u32::from(index);
+        let base = context.vm.get_register(object.into()).clone();
+
+        // Fast path, as in `GetPropertyByValue`.
+        if let Some(object) = base.as_object() {
+            let element = if object.is_array() {
+                object.borrow().properties().get_dense_property(index)
+            } else if object.is::<TypedArray>() {
+                Some(typed_array_get_element(&object, f64::from(index))?.unwrap_or_default())
+            } else {
+                None
+            };
+            if let Some(element) = element {
+                context.vm.set_register(dst.into(), element);
+                return Ok(());
+            }
+        } else if let Some(string) = base.as_string() {
+            let value = string
+                .code_unit_at(index as usize)
+                .map_or_else(JsValue::undefined, |char| js_string!([char].as_slice()).into());
+            context.vm.set_register(dst.into(), value);
+            return Ok(());
+        }
+
+        // Slow path: `object[index]` with the index as the key.
+        let object = base.base_class(context)?;
+        let result = object.__get__(
+            &PropertyKey::from(index),
+            base,
+            &mut InternalMethodPropertyContext::new(context),
+        )?;
+        context.vm.set_register(dst.into(), result);
+        Ok(())
+    }
+}
+
+impl Operation for GetPropertyByIndex {
+    const NAME: &'static str = "GetPropertyByIndex";
+    const INSTRUCTION: &'static str = "INST - GetPropertyByIndex";
+    const COST: u8 = 3;
+}

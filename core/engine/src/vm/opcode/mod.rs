@@ -2152,6 +2152,35 @@ generate_opcodes! {
     ///   - Output: dst
     CreateUnmappedArgumentsObject { dst: RegisterOperand },
 
+    /// Get a property by a constant array index from an object.
+    ///
+    /// Like `object[0]`
+    ///
+    /// - Operands:
+    ///   - index: `IndexOperand`
+    /// - Registers:
+    ///   - Input: object
+    ///   - Output: dst
+    GetPropertyByIndex {
+        dst: RegisterOperand,
+        object: RegisterOperand,
+        index: IndexOperand
+    },
+
+    /// Set a property by a constant array index of an object.
+    ///
+    /// Like `object[0] = value`
+    ///
+    /// - Operands:
+    ///   - index: `IndexOperand`
+    /// - Registers:
+    ///   - Input: object, value
+    SetPropertyByIndex {
+        value: RegisterOperand,
+        object: RegisterOperand,
+        index: IndexOperand
+    },
+
     /// Reserved [`Opcode`].
     Reserved1 => Reserved,
     /// Reserved [`Opcode`].
@@ -2266,10 +2295,6 @@ generate_opcodes! {
     Reserved56 => Reserved,
     /// Reserved [`Opcode`].
     Reserved57 => Reserved,
-    /// Reserved [`Opcode`].
-    Reserved58 => Reserved,
-    /// Reserved [`Opcode`].
-    Reserved59 => Reserved,
     /// Declare `var` type variable during eval declaration instantiation.
     ///
     /// - Operands:
