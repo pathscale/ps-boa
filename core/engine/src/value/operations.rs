@@ -2,6 +2,7 @@ use crate::{
     Context, JsBigInt, JsResult, JsValue, JsVariant,
     builtins::{
         Number,
+        math::Math,
         number::{f64_to_int32, f64_to_uint32},
     },
     error::JsNativeError,
@@ -208,33 +209,22 @@ impl JsValue {
             (JsVariant::Integer32(x), JsVariant::Integer32(y)) => u32::try_from(y)
                 .ok()
                 .and_then(|y| x.checked_pow(y))
-                .map_or_else(|| Self::new(f64::from(x).powi(y)), Self::new),
-            (JsVariant::Float64(x), JsVariant::Float64(y)) => {
-                if x.abs() == 1.0 && y.is_infinite() {
-                    Self::nan()
-                } else {
-                    Self::new(x.powf(y))
-                }
-            }
+                .map_or_else(
+                    || Self::new(Math::exponentiate(f64::from(x), f64::from(y))),
+                    Self::new,
+                ),
+            (JsVariant::Float64(x), JsVariant::Float64(y)) => Self::new(Math::exponentiate(x, y)),
             (JsVariant::Integer32(x), JsVariant::Float64(y)) => {
-                if x.wrapping_abs() == 1 && y.is_infinite() {
-                    Self::nan()
-                } else {
-                    Self::new(f64::from(x).powf(y))
-                }
+                Self::new(Math::exponentiate(f64::from(x), y))
             }
-            (JsVariant::Float64(x), JsVariant::Integer32(y)) => Self::new(x.powi(y)),
+            (JsVariant::Float64(x), JsVariant::Integer32(y)) => {
+                Self::new(Math::exponentiate(x, f64::from(y)))
+            }
             (JsVariant::BigInt(a), JsVariant::BigInt(b)) => Self::new(JsBigInt::pow(&a, &b)?),
 
             // Slow path:
             (_, _) => match (self.to_numeric(context)?, other.to_numeric(context)?) {
-                (Numeric::Number(a), Numeric::Number(b)) => {
-                    if a.abs() == 1.0 && b.is_infinite() {
-                        Self::nan()
-                    } else {
-                        Self::new(a.powf(b))
-                    }
-                }
+                (Numeric::Number(a), Numeric::Number(b)) => Self::new(Math::exponentiate(a, b)),
                 (Numeric::BigInt(ref a), Numeric::BigInt(ref b)) => Self::new(JsBigInt::pow(a, b)?),
                 (_, _) => {
                     return Err(JsNativeError::typ()
@@ -773,16 +763,15 @@ impl JsValue {
                 u32::try_from(y)
                     .ok()
                     .and_then(|y| x.checked_pow(y))
-                    .map_or_else(|| Self::new(f64::from(x).powi(y)), Self::new),
+                    .map_or_else(
+                        || Self::new(Math::exponentiate(f64::from(x), f64::from(y))),
+                        Self::new,
+                    ),
             );
         }
         let x = self.as_number_cheap()?;
         let y = other.as_number_cheap()?;
-        if x.abs() == 1.0 && y.is_infinite() {
-            Some(Self::nan())
-        } else {
-            Some(Self::new(x.powf(y)))
-        }
+        Some(Self::new(Math::exponentiate(x, y)))
     }
 
     /// Fast path for the binary `&` operator (i32 only).
