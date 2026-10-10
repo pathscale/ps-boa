@@ -14,7 +14,7 @@ use crate::object::internal_methods::InternalMethodCallContext;
 use crate::value::JsVariant;
 use crate::{
     Context, JsNativeError, JsObject, JsResult, JsValue,
-    builtins::{OrdinaryObject, function::ConstructorKind},
+    builtins::{OrdinaryObject, function::ConstructorKind, math::Math},
     context::intrinsics::StandardConstructors,
     object::{
         FunctionObjectBuilder, JsData, JsFunction, JsPromise,
@@ -348,6 +348,19 @@ pub(crate) fn native_function_call(
     };
     let _func = context.vm.stack.pop();
     let this = context.vm.stack.pop();
+
+    // An intrinsic Math function on numbers runs no user code and cannot throw, so it needs no
+    // backtrace entry, realm switch or active function.
+    if args.iter().all(JsValue::is_number)
+        && let Some(math) = obj
+            .downcast_ref::<NativeFunctionObject>()
+            .filter(|native| Math::is_pure_on_numbers(&native.f))
+            .map(|native| native.f.clone())
+    {
+        let result = math.call(&this, args, context)?;
+        context.vm.stack.push(result);
+        return Ok(CallValue::Complete);
+    }
 
     // We technically don't need this since native functions don't push any new frames to the
     // vm, but we'll eventually have to combine the native stack with the vm stack.

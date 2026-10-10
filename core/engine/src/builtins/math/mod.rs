@@ -13,7 +13,11 @@
 
 use crate::{
     Context, JsArgs, JsResult, JsString, JsValue, builtins::BuiltInObject,
-    context::intrinsics::Intrinsics, js_string, object::JsObject, property::Attribute,
+    context::intrinsics::Intrinsics,
+    js_string,
+    native_function::{NativeFunction, NativeFunctionPointer},
+    object::JsObject,
+    property::Attribute,
     realm::Realm, string::StaticJsStrings, symbol::JsSymbol,
 };
 
@@ -102,6 +106,31 @@ impl BuiltInObject for Math {
 }
 
 impl Math {
+    /// Returns `true` if `f` is one of the common Math functions that, given only numbers, run
+    /// no user code and cannot throw.
+    pub(crate) fn is_pure_on_numbers(f: &NativeFunction) -> bool {
+        const PURE: [NativeFunctionPointer; 17] = [
+            Math::max,
+            Math::min,
+            Math::floor,
+            Math::ceil,
+            Math::abs,
+            Math::sqrt,
+            Math::sin,
+            Math::cos,
+            Math::round,
+            Math::trunc,
+            Math::atan2,
+            Math::hypot,
+            Math::exp,
+            Math::pow,
+            Math::sign,
+            Math::log,
+            Math::imul,
+        ];
+        PURE.iter().any(|&pure| f.is_fn_ptr(pure))
+    }
+
     /// Get the absolute value of a number.
     ///
     /// More information:
