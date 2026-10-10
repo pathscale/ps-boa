@@ -1,4 +1,4 @@
-use super::{BindingAccessOpcode, ToJsString};
+use super::{BindingAccessOpcode, BindingKind, ToJsString};
 use crate::{
     Context, JsNativeError, JsResult, SpannedSourceText,
     bytecompiler::{ByteCompiler, FunctionCompiler, FunctionSpec, NodeKind},
@@ -1043,6 +1043,20 @@ impl ByteCompiler<'_> {
         // 26. Else,
         //    a. Perform ? IteratorBindingInitialization of formals with arguments iteratorRecord and env.
         for (i, parameter) in formals.as_ref().iter().enumerate() {
+            // A plain identifier parameter held in a register takes its argument directly.
+            if !parameter.is_rest_param()
+                && parameter.variable().init().is_none()
+                && let Binding::Identifier(ident) = parameter.variable().binding()
+            {
+                let ident = ident.to_js_string(self.interner());
+                let binding = self.lexical_scope.get_identifier_reference(ident);
+                if let BindingKind::Local(Some(index)) = self.insert_binding(binding) {
+                    self.bytecode
+                        .emit_get_argument((i as u32).into(), index.into());
+                    continue;
+                }
+            }
+
             let value = self.register_allocator.alloc();
             if parameter.is_rest_param() {
                 self.bytecode.emit_rest_parameter_init(value.variable());
