@@ -234,6 +234,21 @@ impl PromiseCapability {
             resolve: JsValue,
         }
 
+        // With this realm's %Promise% as C, the executor never escapes the constructor, so the
+        // capability is just a pending promise and its resolving functions.
+        if *c == context.intrinsics().constructors().promise().constructor() {
+            let promise = JsObject::from_proto_and_data_with_shared_shape(
+                context.root_shape(),
+                context.intrinsics().constructors().promise().prototype(),
+                Promise::new(),
+            );
+            let functions = Promise::create_resolving_functions(&promise, context);
+            return Ok(Self {
+                promise: promise.upcast(),
+                functions,
+            });
+        }
+
         // 1. If IsConstructor(C) is false, throw a TypeError exception.
         if !c.is_constructor() {
             return Err(JsNativeError::typ()
