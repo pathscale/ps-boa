@@ -1,5 +1,7 @@
+use boa_ast::scope::BindingLocator;
+
 use crate::{
-    Context, JsResult, JsValue,
+    Context, JsExpect, JsResult, JsValue,
     error::JsNativeError,
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::PropertyKey,
@@ -50,11 +52,19 @@ impl GetNameGlobal {
         (dst, index, ic_index): (RegisterOperand, IndexOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
-        let mut binding_locator =
-            context.vm.frame().code_block.bindings[usize::from(index)].clone();
-        context.find_runtime_binding(&mut binding_locator)?;
+        // A global binding that no runtime environment can shadow goes straight to the global
+        // object, without copying its locator.
+        let is_global = context.vm.frame().code_block.bindings[usize::from(index)].is_global();
+        let binding_locator = if is_global && context.global_binding_is_static() {
+            None
+        } else {
+            let mut binding_locator =
+                context.vm.frame().code_block.bindings[usize::from(index)].clone();
+            context.find_runtime_binding(&mut binding_locator)?;
+            Some(binding_locator)
+        };
 
-        if binding_locator.is_global() {
+        if binding_locator.as_ref().is_none_or(BindingLocator::is_global) {
             let object = context.global_object();
 
             let ic = &context.vm.frame().code_block().ic[usize::from(ic_index)];
@@ -91,9 +101,8 @@ impl GetNameGlobal {
 
             let context = &mut InternalMethodPropertyContext::new(context);
             let Some(result) = object.__try_get__(&key, object.clone().into(), context)? else {
-                let name = binding_locator.name().to_std_string_escaped();
                 return Err(JsNativeError::reference()
-                    .with_message(format!("{name} is not defined"))
+                    .with_message(format!("{key} is not defined"))
                     .into());
             };
 
@@ -108,6 +117,7 @@ impl GetNameGlobal {
             return Ok(());
         }
 
+        let binding_locator = binding_locator.js_expect("a non-global binding has a locator")?;
         let result = context.get_binding(&binding_locator)?.ok_or_else(|| {
             let name = binding_locator.name().to_std_string_escaped();
             JsNativeError::reference().with_message(format!("{name} is not defined"))

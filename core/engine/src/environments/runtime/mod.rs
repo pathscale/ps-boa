@@ -543,6 +543,17 @@ impl Context {
         Ok(())
     }
 
+    /// Returns `true` when [`Self::find_runtime_binding`] would leave a global binding locator as
+    /// it is: the current environment is declarative, not a `with` and not poisoned.
+    pub(crate) fn global_binding_is_static(&self) -> bool {
+        let global = self.vm.frame().realm.environment();
+        self.vm
+            .frame()
+            .environments
+            .current_declarative_ref(global)
+            .is_some_and(|env| !env.with() && !env.poisoned())
+    }
+
     /// Finds the object environment that contains the binding and returns the `this` value of the object environment.
     pub(crate) fn this_from_object_environment_binding(
         &mut self,
