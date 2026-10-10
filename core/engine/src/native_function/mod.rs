@@ -390,9 +390,9 @@ pub(crate) fn native_function_call(
     context.vm.native_active_function = Some(this_function_object);
 
     let result = if constructor.is_some() {
-        function.call(&JsValue::undefined(), &args, context)
+        function.call(&JsValue::undefined(), args, context)
     } else {
-        function.call(&this, &args, context)
+        function.call(&this, args, context)
     }
     .map_err(|err| err.inject_realm(context.realm().clone()));
 
