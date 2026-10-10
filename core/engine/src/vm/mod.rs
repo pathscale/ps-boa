@@ -1046,18 +1046,26 @@ impl Context {
 
     /// Checks if we haven't exceeded the defined runtime limits.
     pub(crate) fn check_runtime_limits(&self) -> JsResult<()> {
-        // Must throw if the number of recursive calls exceeds the defined limit.
-        //
-        // `host_call_depth` accounts for nested host calls that re-enter the VM by invoking
-        // `Context::run()` recursively (for example, accessor calls).
-        // Subtract 1 to exclude the dummy frame at index 0.
-        let recursion_depth = (self.vm.frames.len() - 1).saturating_add(self.vm.host_call_depth);
-        if self.vm.runtime_limits.recursion_limit() <= recursion_depth {
-            return Err(RuntimeLimitError::Recursion.into());
+        // JavaScript frames only. The dummy frame at index 0 is not a call.
+        // Native re-entry is `host_call_depth`: `JsObject::call` nests
+        // `Context::run` on the Rust stack, and adding that to the frame count
+        // made every getter, listener and promise reaction cost a frame V8
+        // does not count.
+        let js_depth = self.vm.frames.len().saturating_sub(1);
+        if self.vm.runtime_limits.recursion_limit() <= js_depth
+            || self.vm.runtime_limits.host_recursion_limit() <= self.vm.host_call_depth
+        {
+            return Err(JsNativeError::range()
+                .with_message("Maximum call stack size exceeded")
+                .into());
         }
-        // Must throw if the stack size exceeds the defined maximum length.
+        // Same exception as the frame budget. `try/catch` plus
+        // `instanceof RangeError` is how libraries probe the stack; an
+        // uncatchable engine error never reaches that handler.
         if self.vm.runtime_limits.stack_size_limit() <= self.vm.stack.stack.len() {
-            return Err(RuntimeLimitError::StackSize.into());
+            return Err(JsNativeError::range()
+                .with_message("Maximum call stack size exceeded")
+                .into());
         }
 
         Ok(())
