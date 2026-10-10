@@ -561,19 +561,44 @@ impl Math {
         // b. Append n to coerced.
         // 3. For each element number of coerced, do
         // 5. For each element number of coerced, do
-        let mut result = 0f64;
-        for arg in args {
-            let num = arg.to_number(context)?;
-            // a. If number is +∞𝔽 or number is -∞𝔽, return +∞𝔽.
-            // 4. Let onlyZero be true.
-            // a. If number is NaN, return NaN.
-            // b. If number is neither +0𝔽 nor -0𝔽, set onlyZero to false.
-            // 6. If onlyZero is true, return +0𝔽.
-            // 7. Return an implementation-approximated value representing the square root of the sum of squares of the mathematical values of the elements of coerced.
-            result = result.hypot(num);
+        let mut small = [0f64; 8];
+        let mut large = Vec::new();
+        let coerced: &mut [f64] = if args.len() <= small.len() {
+            &mut small[..args.len()]
+        } else {
+            large.resize(args.len(), 0f64);
+            &mut large
+        };
+        for (slot, arg) in coerced.iter_mut().zip(args) {
+            *slot = arg.to_number(context)?;
+        }
+        // a. If number is +∞𝔽 or number is -∞𝔽, return +∞𝔽.
+        if coerced.iter().any(|n| n.is_infinite()) {
+            return Ok(f64::INFINITY.into());
+        }
+        // a. If number is NaN, return NaN.
+        if coerced.iter().any(|n| n.is_nan()) {
+            return Ok(f64::NAN.into());
+        }
+        // 4. Let onlyZero be true.
+        // b. If number is neither +0𝔽 nor -0𝔽, set onlyZero to false.
+        // 6. If onlyZero is true, return +0𝔽.
+        let max = coerced.iter().fold(0f64, |max, n| max.max(n.abs()));
+        if max == 0.0 {
+            return Ok(0.into());
+        }
+        // 7. Return an implementation-approximated value representing the square root of the sum of squares of the mathematical values of the elements of coerced.
+        // Scaled by the largest magnitude and Kahan-summed, as V8 does, so results match it bit for bit.
+        let (mut sum, mut compensation) = (0f64, 0f64);
+        for n in coerced.iter() {
+            let scaled = n / max;
+            let summand = scaled * scaled - compensation;
+            let preliminary = sum + summand;
+            compensation = (preliminary - sum) - summand;
+            sum = preliminary;
         }
 
-        Ok(result.into())
+        Ok((sum.sqrt() * max).into())
     }
 
     /// Get the result of the C-like 32-bit multiplication of the two parameters.
