@@ -397,8 +397,9 @@ pub struct IteratorRecord {
     /// Whether the iterator has been closed.
     done: bool,
 
-    /// The result of the last call to `next`.
-    last_result: IteratorResult,
+    /// The result of the last call to `next`; `None` until there is one, which reads as an empty
+    /// result object.
+    last_result: Option<IteratorResult>,
 
     /// Whether `next_method` is the intrinsic `%ArrayIteratorPrototype%.next`, so `step` can run
     /// it directly without allocating a result object.
@@ -418,9 +419,7 @@ impl IteratorRecord {
             iterator,
             next_method,
             done: false,
-            last_result: IteratorResult {
-                object: JsObject::with_null_proto(),
-            },
+            last_result: None,
             array_next,
             fast_value: None,
         }
@@ -440,11 +439,13 @@ impl IteratorRecord {
     pub(crate) fn last_result(&mut self, context: &mut Context) -> &IteratorResult {
         if let Some(value) = self.fast_value.take() {
             let object = create_iter_result_object(value, false, context);
-            self.last_result = IteratorResult {
+            self.last_result = Some(IteratorResult {
                 object: object.as_object().expect("iter result is an object").clone(),
-            };
+            });
         }
-        &self.last_result
+        self.last_result.get_or_insert_with(|| IteratorResult {
+            object: JsObject::with_null_proto(),
+        })
     }
 
     /// Runs `f`, setting the `done` field of this `IteratorRecord` to `true` if `f` returns
@@ -465,7 +466,11 @@ impl IteratorRecord {
         if let Some(value) = &self.fast_value {
             return Ok(value.clone());
         }
-        self.set_done_on_err(|iter| iter.last_result.value(context))
+        self.set_done_on_err(|iter| {
+            iter.last_result
+                .as_ref()
+                .map_or(Ok(JsValue::undefined()), |result| result.value(context))
+        })
     }
 
     /// Get the `[[Done]]` field of the `IteratorRecord`.
@@ -489,7 +494,7 @@ impl IteratorRecord {
             // 3. If done is true, return false.
             iter.done = result.complete(context)?;
 
-            iter.last_result = result;
+            iter.last_result = Some(result);
             iter.fast_value = None;
 
             Ok(())
@@ -556,8 +561,9 @@ impl IteratorRecord {
                 iter.done = done;
                 if done {
                     iter.fast_value = None;
-                    iter.last_result =
-                        IteratorResult::from_value(create_iter_result_object(value, true, context))?;
+                    iter.last_result = Some(IteratorResult::from_value(
+                        create_iter_result_object(value, true, context),
+                    )?);
                 } else {
                     iter.fast_value = Some(value);
                 }
@@ -578,7 +584,7 @@ impl IteratorRecord {
             //     b. Return done.
             iter.done = result.complete(context)?;
 
-            iter.last_result = result;
+            iter.last_result = Some(result);
 
             // 6. Return result.
             Ok(iter.done)
