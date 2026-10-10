@@ -14,6 +14,7 @@ use crate::{
     context::intrinsics::Intrinsics,
     error::JsNativeError,
     js_string,
+    native_function::NativeFunctionObject,
     object::JsObject,
     property::{Attribute, PropertyNameKind},
     realm::Realm,
@@ -94,6 +95,21 @@ impl ArrayIterator {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-%arrayiteratorprototype%.next
     pub(crate) fn next(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+        let (value, done) = Self::next_value(this, context)?;
+        Ok(create_iter_result_object(value, done, context))
+    }
+
+    /// Returns `true` if `next_method` is the intrinsic `%ArrayIteratorPrototype%.next`.
+    pub(crate) fn is_intrinsic_next(next_method: &JsValue) -> bool {
+        next_method.as_object().is_some_and(|f| {
+            f.downcast_ref::<NativeFunctionObject>()
+                .is_some_and(|f| f.f.is_fn_ptr(Self::next))
+        })
+    }
+
+    /// The steps of `%ArrayIteratorPrototype%.next`, returning the value and `done` flag instead of
+    /// a result object, so an iterator record over the intrinsic `next` can skip the allocation.
+    pub(crate) fn next_value(this: &JsValue, context: &mut Context) -> JsResult<(JsValue, bool)> {
         let object = this.as_object();
         let mut array_iterator = object
             .as_ref()
@@ -101,11 +117,7 @@ impl ArrayIterator {
             .ok_or_else(|| JsNativeError::typ().with_message("`this` is not an ArrayIterator"))?;
         let index = array_iterator.next_index;
         if array_iterator.done {
-            return Ok(create_iter_result_object(
-                JsValue::undefined(),
-                true,
-                context,
-            ));
+            return Ok((JsValue::undefined(), true));
         }
 
         let len = if let Some(f) = array_iterator.array.downcast_ref::<TypedArray>() {
@@ -126,23 +138,19 @@ impl ArrayIterator {
 
         if index >= len {
             array_iterator.done = true;
-            return Ok(create_iter_result_object(
-                JsValue::undefined(),
-                true,
-                context,
-            ));
+            return Ok((JsValue::undefined(), true));
         }
         array_iterator.next_index = index + 1;
         match array_iterator.kind {
-            PropertyNameKind::Key => Ok(create_iter_result_object(index.into(), false, context)),
+            PropertyNameKind::Key => Ok((index.into(), false)),
             PropertyNameKind::Value => {
                 let element_value = array_iterator.array.get(index, context)?;
-                Ok(create_iter_result_object(element_value, false, context))
+                Ok((element_value, false))
             }
             PropertyNameKind::KeyAndValue => {
                 let element_value = array_iterator.array.get(index, context)?;
                 let result = Array::create_array_from_list([index.into(), element_value], context);
-                Ok(create_iter_result_object(result.into(), false, context))
+                Ok((result.into(), false))
             }
         }
     }

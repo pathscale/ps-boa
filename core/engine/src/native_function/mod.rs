@@ -154,6 +154,11 @@ impl std::fmt::Debug for NativeFunction {
 }
 
 impl NativeFunction {
+    /// Returns `true` if this is the function pointer `function`.
+    pub(crate) fn is_fn_ptr(&self, function: NativeFunctionPointer) -> bool {
+        matches!(self.inner, Inner::PointerFn(f) if std::ptr::fn_addr_eq(f, function))
+    }
+
     /// Creates a `NativeFunction` from a function pointer.
     #[inline]
     pub fn from_fn_ptr(function: NativeFunctionPointer) -> Self {
