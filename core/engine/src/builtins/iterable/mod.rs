@@ -407,6 +407,10 @@ pub struct IteratorRecord {
 
     /// The value of the last non-done fast `step`; `last_result` is stale while this is `Some`.
     fast_value: Option<JsValue>,
+
+    /// Whether the last fast `step` was done; its `{ value: undefined, done: true }` result
+    /// object is only created if bytecode asks for it.
+    fast_done: bool,
 }
 
 impl IteratorRecord {
@@ -422,6 +426,7 @@ impl IteratorRecord {
             last_result: None,
             array_next,
             fast_value: None,
+            fast_done: false,
         }
     }
 
@@ -439,6 +444,13 @@ impl IteratorRecord {
     pub(crate) fn last_result(&mut self, context: &mut Context) -> &IteratorResult {
         if let Some(value) = self.fast_value.take() {
             let object = create_iter_result_object(value, false, context);
+            self.last_result = Some(IteratorResult {
+                object: object.as_object().expect("iter result is an object").clone(),
+            });
+        }
+        if self.fast_done {
+            self.fast_done = false;
+            let object = create_iter_result_object(JsValue::undefined(), true, context);
             self.last_result = Some(IteratorResult {
                 object: object.as_object().expect("iter result is an object").clone(),
             });
@@ -496,6 +508,7 @@ impl IteratorRecord {
 
             iter.last_result = Some(result);
             iter.fast_value = None;
+            iter.fast_done = false;
 
             Ok(())
         })
@@ -561,9 +574,8 @@ impl IteratorRecord {
                 iter.done = done;
                 if done {
                     iter.fast_value = None;
-                    iter.last_result = Some(IteratorResult::from_value(
-                        create_iter_result_object(value, true, context),
-                    )?);
+                    iter.last_result = None;
+                    iter.fast_done = true;
                 } else {
                     iter.fast_value = Some(value);
                 }
