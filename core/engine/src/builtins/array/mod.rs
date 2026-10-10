@@ -567,6 +567,11 @@ impl Array {
         }
 
         if let Some(c) = c.as_constructor() {
+            // Constructing this realm's %Array% with one length argument is ArrayCreate(length):
+            // its `prototype` is fixed, and both throw a RangeError past 2^32 - 1.
+            if c == context.intrinsics().constructors().array().constructor() {
+                return Self::array_create(length, None, context);
+            }
             // 8. Return ? Construct(C, « 𝔽(length) »).
             return c.construct(&[JsValue::new(length)], Some(&c), context);
         }
