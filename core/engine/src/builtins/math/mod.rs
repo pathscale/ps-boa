@@ -12,13 +12,16 @@
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math
 
 use crate::{
-    Context, JsArgs, JsResult, JsString, JsValue, builtins::BuiltInObject,
+    Context, JsArgs, JsResult, JsString, JsValue,
+    builtins::BuiltInObject,
     context::intrinsics::Intrinsics,
     js_string,
     native_function::{NativeFunction, NativeFunctionPointer},
     object::JsObject,
     property::Attribute,
-    realm::Realm, string::StaticJsStrings, symbol::JsSymbol,
+    realm::Realm,
+    string::StaticJsStrings,
+    symbol::JsSymbol,
 };
 
 use super::{BuiltInBuilder, IntrinsicObject};
@@ -801,14 +804,19 @@ impl Math {
         let y = args.get_or_undefined(1).to_number(context)?;
 
         // 3. Return Number::exponentiate(base, exponent).
+        Ok(Self::exponentiate(x, y).into())
+    }
 
+    /// `Number::exponentiate ( base, exponent )`, shared by `Math.pow` and the `**` operator.
+    #[allow(clippy::float_cmp)]
+    pub(crate) fn exponentiate(x: f64, y: f64) -> f64 {
         // https://github.com/rust-lang/rust/issues/60468
 
         // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-exponentiate
         // 6.1.6.1.3 Number::exponentiate ( base, exponent )
         //  1. If exponent is NaN, return NaN.
         if y.is_nan() {
-            return Ok(f64::NAN.into());
+            return f64::NAN;
         }
 
         // 9. If exponent is +∞𝔽, then
@@ -820,15 +828,19 @@ impl Math {
         //   b. If abs(ℝ(base)) = 1, return NaN.
         //   c. If abs(ℝ(base)) < 1, return +∞𝔽.
         if f64::abs(x) == 1f64 && y.is_infinite() {
-            return Ok(f64::NAN.into());
+            return f64::NAN;
         }
 
-        // fdlibm's pow, which browsers follow, returns `x * x` for an exponent of 2.
+        // fdlibm's pow, which browsers follow, returns `x * x` for an exponent of 2 and the square
+        // root of a non-negative base (sign bit clear) for an exponent of 0.5.
         if y == 2.0 {
-            return Ok((x * x).into());
+            return x * x;
+        }
+        if y == 0.5 && x.is_sign_positive() {
+            return x.sqrt();
         }
 
-        Ok(x.powf(y).into())
+        x.powf(y)
     }
 
     /// Generate a random floating-point number between `0` and `1`.
