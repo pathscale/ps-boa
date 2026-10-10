@@ -2069,6 +2069,21 @@ impl RegExp {
             return Ok(a.into());
         }
 
+        // With %RegExp% as C and the intrinsic `exec`, the splitter is a fresh RegExp that no user code
+        // can reach, so a sticky match tried at each q is one forward search from q.
+        let regexp = context.intrinsics().constructors().regexp();
+        if JsObject::equals(&constructor, &regexp.constructor()) {
+            let exec = regexp
+                .prototype()
+                .borrow()
+                .properties()
+                .get(&js_string!("exec").into())
+                .and_then(|desc| desc.value().cloned());
+            if let Some(splitter) = exec.and_then(|exec| Self::intrinsic_exec_target(&splitter, &exec)) {
+                return Self::split_by_search(&splitter, &arg_str, &a, lim, unicode, context);
+            }
+        }
+
         // 17. Let p be 0.
         // 18. Let q be p.
         let mut p = 0;
@@ -2155,6 +2170,69 @@ impl RegExp {
 
         // 22. Return A.
         Ok(a.into())
+    }
+
+    /// Steps 17 to 22 of `RegExp.prototype [ %Symbol.split% ]` for a splitter only the engine can
+    /// observe: each piece is one forward search on the input widened once, where the spec loop
+    /// runs a sticky match at every code unit.
+    fn split_by_search(
+        splitter: &JsObject<RegExp>,
+        s: &JsString,
+        a: &JsObject,
+        lim: u32,
+        unicode: bool,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        let rx = splitter.borrow().data().clone();
+        let full_unicode = rx.flags.contains(RegExpFlags::UNICODE)
+            || rx.flags.contains(RegExpFlags::UNICODE_SETS);
+        let widened;
+        let (input, utf16): (&[u16], bool) = match s.as_str().variant() {
+            JsStrVariant::Latin1(bytes) => {
+                widened = bytes.iter().map(|&byte| u16::from(byte)).collect::<Vec<_>>();
+                (&widened, false)
+            }
+            JsStrVariant::Utf16(units) => (units, full_unicode),
+        };
+        let size = input.len();
+        let mut length_a = 0;
+        let mut p = 0;
+        let mut q = 0;
+        while q < size {
+            let found = if utf16 {
+                rx.matcher.find_from_utf16(input, q).next()
+            } else {
+                rx.matcher.find_from_ucs2(input, q).next()
+            };
+            // The first q at which a sticky match succeeds, if any is below size.
+            let Some(m) = found.filter(|m| m.start() < size) else {
+                break;
+            };
+            let e = m.end().min(size);
+            if e == p {
+                q = advance_string_index(s, m.start() as u64, unicode) as usize;
+                continue;
+            }
+            a.create_data_property_or_throw(length_a, s.get_expect(p..m.start()), context)?;
+            length_a += 1;
+            if length_a == lim {
+                return Ok(a.clone().into());
+            }
+            p = e;
+            for capture in &m.captures {
+                let value = capture
+                    .clone()
+                    .map_or_else(JsValue::undefined, |range| s.get_expect(range).into());
+                a.create_data_property_or_throw(length_a, value, context)?;
+                length_a += 1;
+                if length_a == lim {
+                    return Ok(a.clone().into());
+                }
+            }
+            q = p;
+        }
+        a.create_data_property_or_throw(length_a, s.get_expect(p..size), context)?;
+        Ok(a.clone().into())
     }
 
     /// [`RegExp.prototype.compile ( pattern, flags )`][spec]
