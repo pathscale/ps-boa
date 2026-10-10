@@ -75,10 +75,9 @@ impl Url {
         if let Some(Convert(ref base)) = base {
             let base_url = url::Url::parse(base)
                 .map_err(|e| js_error!(TypeError: "Failed to parse base URL: {}", e))?;
-            if base_url.cannot_be_a_base() {
-                return Err(js_error!(TypeError: "Base URL {} cannot be a base", base));
-            }
-
+            // An opaque base (data:, mailto:) is fine for an absolute input,
+            // which ignores the base; `join` rejects only a relative input
+            // against it, as the URL standard does.
             let url = base_url
                 .join(url)
                 .map_err(|e| js_error!(TypeError: "Failed to parse URL: {}", e))?;
