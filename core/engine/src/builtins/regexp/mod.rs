@@ -15,6 +15,7 @@ use crate::{
     context::intrinsics::{Intrinsics, StandardConstructor, StandardConstructors},
     error::JsNativeError,
     js_string,
+    native_function::NativeFunctionObject,
     object::{CONSTRUCTOR, JsObject, internal_methods::get_prototype_from_constructor},
     property::Attribute,
     realm::Realm,
@@ -1028,7 +1029,14 @@ impl RegExp {
             .to_string(context)?;
 
         // 4. Let match be ? RegExpExec(R, string).
-        let m = Self::abstract_exec(&this, arg_str, context)?;
+        // With the intrinsic `exec`, only whether it matches is needed, not the result array.
+        let exec = this.get(js_string!("exec"), context)?;
+        if let Some(rx) = Self::intrinsic_exec_target(&this, &exec) {
+            let data = rx.borrow().data().clone();
+            let matched = Self::builtin_exec_match(&rx.upcast(), &data, &arg_str, context)?;
+            return Ok(JsValue::new(matched.is_some()));
+        }
+        let m = Self::abstract_exec_with(&this, &exec, arg_str, context)?;
 
         // 5. If match is not null, return true; else return false.
         if m.is_some() {
@@ -1089,6 +1097,31 @@ impl RegExp {
         // 3. Let exec be ? Get(R, "exec").
         let exec = this.get(js_string!("exec"), context)?;
 
+        Self::abstract_exec_with(this, &exec, input, context)
+    }
+
+    /// The `RegExp` that `exec` would run `RegExpBuiltinExec` on when `exec` is the intrinsic
+    /// `RegExp.prototype.exec` and `this` is a `RegExp`, so callers can skip the call.
+    fn intrinsic_exec_target(this: &JsObject, exec: &JsValue) -> Option<JsObject<RegExp>> {
+        let exec = exec.as_object()?;
+        let native = exec.downcast_ref::<NativeFunctionObject>()?;
+        if !native.f.is_fn_ptr(Self::exec) {
+            return None;
+        }
+        this.clone().downcast::<RegExp>().ok()
+    }
+
+    /// Steps 4 to 6 of `RegExpExec`, with `exec` already read from `this`.
+    fn abstract_exec_with(
+        this: &JsObject,
+        exec: &JsValue,
+        input: JsString,
+        context: &mut Context,
+    ) -> JsResult<Option<JsObject>> {
+        if let Some(rx) = Self::intrinsic_exec_target(this, exec) {
+            return Self::abstract_builtin_exec(rx, &input, context);
+        }
+
         // 4. If IsCallable(exec) is true, then
         if let Some(exec) = exec.as_callable() {
             // a. Let result be ? Call(exec, R, « S »).
@@ -1130,6 +1163,32 @@ impl RegExp {
         let rx = this.borrow().data().clone();
         let this = this.upcast();
 
+        let Some((match_value, last_index)) = Self::builtin_exec_match(&this, &rx, input, context)?
+        else {
+            return Ok(None);
+        };
+
+        // 6. If flags contains "d", let hasIndices be true; else let hasIndices be false.
+        let has_indices = rx.flags.contains(RegExpFlags::HAS_INDICES);
+
+        // 14. Let e be r's endIndex value.
+        // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
+        // NOTE: Step 15 is already taken care of by regress.
+        let e = match_value.end();
+
+        Self::build_exec_result(&match_value, last_index, e, has_indices, input, context)
+            .map(Some)
+    }
+
+    /// Steps 1 to 16 of `RegExpBuiltinExec`: runs the matcher from `lastIndex` and updates
+    /// `lastIndex`, returning the match and its start index, or `None` where the result is null.
+    /// `RegExp.prototype.test` needs no more than this.
+    fn builtin_exec_match(
+        this: &JsObject,
+        rx: &RegExp,
+        input: &JsString,
+        context: &mut Context,
+    ) -> JsResult<Option<(regress::Match, u64)>> {
         // 1. Let length be the length of S.
         let length = input.len() as u64;
 
@@ -1139,16 +1198,13 @@ impl RegExp {
             .to_length(context)?;
 
         // 3. Let flags be R.[[OriginalFlags]].
-        let flags = &rx.original_flags;
+        let flags = rx.flags;
 
         // 4. If flags contains "g", let global be true; else let global be false.
-        let global = flags.contains(b'g');
+        let global = flags.contains(RegExpFlags::GLOBAL);
 
         // 5. If flags contains "y", let sticky be true; else let sticky be false.
-        let sticky = flags.contains(b'y');
-
-        // 6. If flags contains "d", let hasIndices be true; else let hasIndices be false.
-        let has_indices = flags.contains(b'd');
+        let sticky = flags.contains(RegExpFlags::STICKY);
 
         // 7. If global is false and sticky is false, set lastIndex to 0.
         if !global && !sticky {
@@ -1159,7 +1215,8 @@ impl RegExp {
         let matcher = &rx.matcher;
 
         // 9. If flags contains "u" or flags contains "v", let fullUnicode be true; else let fullUnicode be false.
-        let full_unicode = flags.contains(b'u') || flags.contains(b'v');
+        let full_unicode =
+            flags.contains(RegExpFlags::UNICODE) || flags.contains(RegExpFlags::UNICODE_SETS);
 
         // NOTE: The following steps are take care of by regress:
         //
@@ -1235,17 +1292,25 @@ impl RegExp {
         // NOTE: Calculation of last_index is done in regress.
         last_index = match_value.start() as u64;
 
-        // 14. Let e be r's endIndex value.
-        // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
-        // NOTE: Step 15 is already taken care of by regress.
-        let e = match_value.end();
-
         // 16. If global is true or sticky is true, then
         if global || sticky {
             // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
-            this.set(js_string!("lastIndex"), e, true, context)?;
+            this.set(js_string!("lastIndex"), match_value.end(), true, context)?;
         }
 
+        Ok(Some((match_value, last_index)))
+    }
+
+    /// Steps 17 to 35 of `RegExpBuiltinExec`: the result array of a match. The `indices`
+    /// arrays are only built when the regular expression has the `d` flag.
+    fn build_exec_result(
+        match_value: &regress::Match,
+        last_index: u64,
+        e: usize,
+        has_indices: bool,
+        input: &JsString,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
         // 17. Let n be the number of elements in r's captures List.
         let n = match_value.captures.len() as u64;
         // 18. Assert: n = R.[[RegExpRecord]].[[CapturingGroupsCount]].
@@ -1266,16 +1331,21 @@ impl RegExp {
         // Immediately convert it to an array according to 22.2.7.7 GetMatchIndexPair(S, match)
         // 1. Assert: match.[[StartIndex]] ≤ match.[[EndIndex]] ≤ the length of S.
         // 2. Return CreateArrayFromList(« 𝔽(match.[[StartIndex]]), 𝔽(match.[[EndIndex]]) »).
-        let match_record = Array::create_array_from_list(
-            [match_value.start().into(), match_value.end().into()],
-            context,
-        );
+        let indices = if has_indices {
+            let match_record = Array::create_array_from_list(
+                [match_value.start().into(), match_value.end().into()],
+                context,
+            );
 
-        // 25. Let indices be a new empty List.
-        let indices = Array::array_create(n + 1, None, context)?;
+            // 25. Let indices be a new empty List.
+            let indices = Array::array_create(n + 1, None, context)?;
 
-        // 27. Append match to indices.
-        indices.create_data_property_or_throw(0, match_record, context)?;
+            // 27. Append match to indices.
+            indices.create_data_property_or_throw(0, match_record, context)?;
+            Some(indices)
+        } else {
+            None
+        };
 
         // 28. Let matchedSubstr be GetMatchString(S, match).
         let matched_substr = input.get_expect((last_index as usize)..(e));
@@ -1349,7 +1419,9 @@ impl RegExp {
 
         // 22.2.7.8 MakeMatchIndicesIndexPairArray ( S, indices, groupNames, hasGroups )
         // 8. Perform ! CreateDataPropertyOrThrow(A, "groups", groups).
-        indices.create_data_property_or_throw(js_string!("groups"), group_names, context)?;
+        if let Some(indices) = &indices {
+            indices.create_data_property_or_throw(js_string!("groups"), group_names, context)?;
+        }
 
         // 32. Perform ! CreateDataPropertyOrThrow(A, "groups", groups).
         a.create_data_property_or_throw(js_string!("groups"), groups, context)?;
@@ -1370,7 +1442,7 @@ impl RegExp {
             a.create_data_property_or_throw(i, captured_value.clone(), context)?;
 
             // 22.2.7.8 MakeMatchIndicesIndexPairArray ( S, indices, groupNames, hasGroups )
-            if has_indices {
+            if let Some(indices) = &indices {
                 // b. If matchIndices is not undefined, then
                 // i. Let matchIndexPair be GetMatchIndexPair(S, matchIndices).
                 // c. Else,
@@ -1388,12 +1460,12 @@ impl RegExp {
         // 34. If hasIndices is true, then
         // a. Let indicesArray be MakeMatchIndicesIndexPairArray(S, indices, groupNames, hasGroups).
         // b. Perform ! CreateDataPropertyOrThrow(A, "indices", indicesArray).
-        if has_indices {
+        if let Some(indices) = indices {
             a.create_data_property_or_throw(js_string!("indices"), indices, context)?;
         }
 
         // 35. Return A.
-        Ok(Some(a))
+        Ok(a)
     }
 
     /// `RegExp.prototype[ @@match ]( string )`
