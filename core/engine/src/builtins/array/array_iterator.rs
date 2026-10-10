@@ -8,7 +8,8 @@
 use crate::{
     Context, JsData, JsResult,
     builtins::{
-        Array, BuiltInBuilder, IntrinsicObject, JsValue, iterable::create_iter_result_object,
+        Array, BuiltInBuilder, IntrinsicObject, JsValue,
+        iterable::{IteratorRecord, create_iter_result_object},
         typed_array::TypedArray,
     },
     context::intrinsics::Intrinsics,
@@ -16,7 +17,7 @@ use crate::{
     js_string,
     native_function::NativeFunctionObject,
     object::JsObject,
-    property::{Attribute, PropertyNameKind},
+    property::{Attribute, PropertyKey, PropertyNameKind},
     realm::Realm,
     symbol::JsSymbol,
 };
@@ -97,6 +98,48 @@ impl ArrayIterator {
     pub(crate) fn next(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
         let (value, done) = Self::next_value(this, context)?;
         Ok(create_iter_result_object(value, done, context))
+    }
+
+    /// `GetIterator(o, sync)` for an array still on the array template shape (so no own
+    /// `@@iterator`, and `Array.prototype` as its prototype) while `Array.prototype[@@iterator]`
+    /// is the intrinsic `values` and `%ArrayIteratorPrototype%.next` the intrinsic `next`, both
+    /// data properties: the iterator record those lookups and the `values` call would produce.
+    /// `None` when any of that does not hold.
+    pub(crate) fn fast_iterator_record(o: &JsObject, context: &Context) -> Option<IteratorRecord> {
+        let intrinsics = context.intrinsics();
+        if !o.is_array()
+            || o.borrow().properties().shape.to_addr_usize()
+                != intrinsics.templates().array().shape().to_addr_usize()
+        {
+            return None;
+        }
+
+        let own_data = |object: &JsObject, key: PropertyKey| {
+            let object = object.borrow();
+            let slot = object.properties().shape.lookup(&key)?;
+            if slot.attributes.is_accessor_descriptor() {
+                return None;
+            }
+            Some(object.properties().storage[slot.index as usize].clone())
+        };
+
+        let values = own_data(
+            &intrinsics.constructors().array().prototype(),
+            JsSymbol::iterator().into(),
+        )?;
+        if values.as_object()? != JsObject::from(intrinsics.objects().array_prototype_values()) {
+            return None;
+        }
+        let next = own_data(
+            &intrinsics.objects().iterator_prototypes().array(),
+            js_string!("next").into(),
+        )?;
+        if !Self::is_intrinsic_next(&next) {
+            return None;
+        }
+
+        let iterator = Self::create_array_iterator(o.clone(), PropertyNameKind::Value, context);
+        Some(IteratorRecord::new(iterator.as_object()?, next))
     }
 
     /// Returns `true` if `next_method` is the intrinsic `%ArrayIteratorPrototype%.next`.

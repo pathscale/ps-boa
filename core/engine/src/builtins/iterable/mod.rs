@@ -292,6 +292,11 @@ impl JsValue {
             }
             // 2. Else,
             IteratorHint::Sync => {
+                if let Some(object) = self.as_object()
+                    && let Some(record) = ArrayIterator::fast_iterator_record(&object, context)
+                {
+                    return Ok(record);
+                }
                 // a. Let method be ? GetMethod(obj, %Symbol.iterator%).
                 self.get_method(JsSymbol::iterator(), context)?
             }
