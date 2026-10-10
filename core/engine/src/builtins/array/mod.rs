@@ -313,6 +313,66 @@ impl Array {
         Ok(())
     }
 
+    /// Returns `true` if neither the intrinsic `Array.prototype` nor the intrinsic
+    /// `Object.prototype` it inherits from has any indexed property.
+    fn array_prototypes_have_no_elements(context: &Context) -> bool {
+        let array_prototype = context.intrinsics().constructors().array().prototype();
+        let object_prototype = context.intrinsics().constructors().object().prototype();
+        let array_prototype = array_prototype.borrow();
+        array_prototype.properties().indexed_properties.dense_len() == Some(0)
+            && array_prototype
+                .properties()
+                .shape
+                .prototype()
+                .is_some_and(|p| p == object_prototype)
+            && object_prototype
+                .borrow()
+                .properties()
+                .indexed_properties
+                .dense_len()
+                == Some(0)
+    }
+
+    /// Appends `value` at `index` straight into dense storage when that is all
+    /// `CreateDataProperty(o, index, value)` would do: `o` is an extensible array still on the
+    /// array template shape (writable `length` at slot 0, nothing else named) and `index` is the
+    /// end of its dense elements. Returns `false`, having done nothing, otherwise.
+    pub(crate) fn try_append_dense(
+        o: &JsObject,
+        index: u64,
+        value: &JsValue,
+        context: &Context,
+    ) -> bool {
+        if index >= u64::from(u32::MAX) || !o.is_array() {
+            return false;
+        }
+        let template = context
+            .intrinsics()
+            .templates()
+            .array()
+            .shape()
+            .to_addr_usize();
+        let mut o = o.borrow_mut();
+        if !o.extensible || o.properties().shape.to_addr_usize() != template {
+            return false;
+        }
+        let properties = o.properties_mut();
+        if properties.indexed_properties.dense_len() != Some(index as usize) {
+            return false;
+        }
+        let Some(len) = properties.storage[0].as_number() else {
+            return false;
+        };
+        if !properties.indexed_properties.push_dense(value) {
+            return false;
+        }
+        // NOTE: The "length" property is the first element.
+        if index as f64 >= len {
+            properties.storage[0] = JsValue::new(index + 1);
+        }
+        true
+    }
+
     /// Utility for constructing `Array` objects.
     ///
     /// More information:
@@ -875,8 +935,15 @@ impl Array {
                 )
                 .into());
         }
+        // With no elements on the prototype chain, `Set` of an index past the end of a template
+        // array only creates an own data element.
+        let fast = Self::array_prototypes_have_no_elements(context);
         // 5. For each element E of items, do
         for element in args.iter().cloned() {
+            if fast && Self::try_append_dense(&o, len, &element, context) {
+                len += 1;
+                continue;
+            }
             // a. Perform ? Set(O, ! ToString(𝔽(len)), E, true).
             o.set(len, element, true, context)?;
             // b. Set len to len + 1.
