@@ -1,7 +1,8 @@
-use boa_ast::scope::BindingLocator;
+use boa_ast::scope::{BindingLocator, BindingLocatorScope};
 
 use crate::{
     Context, JsExpect, JsResult, JsValue,
+    environments::Environment,
     error::JsNativeError,
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::PropertyKey,
@@ -21,6 +22,35 @@ impl GetName {
         (value, index): (RegisterOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
+        // When `find_runtime_binding` would leave the locator as it is, read an initialized
+        // declarative binding in place, without copying the locator.
+        let fast = {
+            let locator = &context.vm.frame().code_block.bindings[usize::from(index)];
+            if context.global_binding_is_static() && !context.is_deleted_binding(locator) {
+                match locator.scope() {
+                    BindingLocatorScope::GlobalDeclarative => context
+                        .vm
+                        .frame()
+                        .realm
+                        .environment()
+                        .get(locator.binding_index()),
+                    BindingLocatorScope::Stack(env_index) => {
+                        match context.environment_expect(env_index) {
+                            Environment::Declarative(env) => env.get(locator.binding_index()),
+                            Environment::Object(_) => None,
+                        }
+                    }
+                    BindingLocatorScope::GlobalObject => None,
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(result) = fast {
+            context.vm.set_register(value.into(), result);
+            return Ok(());
+        }
+
         let mut binding_locator =
             context.vm.frame().code_block.bindings[usize::from(index)].clone();
         context.find_runtime_binding(&mut binding_locator)?;
