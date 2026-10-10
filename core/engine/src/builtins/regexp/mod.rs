@@ -1177,8 +1177,7 @@ impl RegExp {
         // NOTE: Step 15 is already taken care of by regress.
         let e = match_value.end();
 
-        Self::build_exec_result(&match_value, last_index, e, has_indices, input, context)
-            .map(Some)
+        Self::build_exec_result(&match_value, last_index, e, has_indices, input, context).map(Some)
     }
 
     /// Steps 1 to 16 of `RegExpBuiltinExec`: runs the matcher from `lastIndex` and updates
@@ -2079,7 +2078,9 @@ impl RegExp {
                 .properties()
                 .get(&js_string!("exec").into())
                 .and_then(|desc| desc.value().cloned());
-            if let Some(splitter) = exec.and_then(|exec| Self::intrinsic_exec_target(&splitter, &exec)) {
+            if let Some(splitter) =
+                exec.and_then(|exec| Self::intrinsic_exec_target(&splitter, &exec))
+            {
                 return Self::split_by_search(&splitter, &arg_str, &a, lim, unicode, context);
             }
         }
@@ -2184,12 +2185,15 @@ impl RegExp {
         context: &mut Context,
     ) -> JsResult<JsValue> {
         let rx = splitter.borrow().data().clone();
-        let full_unicode = rx.flags.contains(RegExpFlags::UNICODE)
-            || rx.flags.contains(RegExpFlags::UNICODE_SETS);
+        let full_unicode =
+            rx.flags.contains(RegExpFlags::UNICODE) || rx.flags.contains(RegExpFlags::UNICODE_SETS);
         let widened;
         let (input, utf16): (&[u16], bool) = match s.as_str().variant() {
             JsStrVariant::Latin1(bytes) => {
-                widened = bytes.iter().map(|&byte| u16::from(byte)).collect::<Vec<_>>();
+                widened = bytes
+                    .iter()
+                    .map(|&byte| u16::from(byte))
+                    .collect::<Vec<_>>();
                 (&widened, false)
             }
             JsStrVariant::Utf16(units) => (units, full_unicode),

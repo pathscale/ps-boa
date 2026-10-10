@@ -1456,11 +1456,14 @@ impl<'ctx> ByteCompiler<'ctx> {
                         PropertyAccessField::Const(ident) => {
                             let ident = ident.sym();
                             compiler.compile_expr_operand(access.target(), |compiler, object| {
-                                compiler.emit_get_property_by_name_operand(dst, None, object, ident);
+                                compiler
+                                    .emit_get_property_by_name_operand(dst, None, object, ident);
                             });
                             return;
                         }
-                        PropertyAccessField::Expr(expr) if let Some(index) = Self::const_index(expr) => {
+                        PropertyAccessField::Expr(expr)
+                            if let Some(index) = Self::const_index(expr) =>
+                        {
                             compiler.compile_expr_operand(access.target(), |compiler, object| {
                                 compiler.bytecode.emit_get_property_by_index(
                                     dst.variable(),
@@ -1602,7 +1605,9 @@ impl<'ctx> ByteCompiler<'ctx> {
                         self.emit_set_property_by_name(value, None, &object, name.sym());
                         self.register_allocator.dealloc(object);
                     }
-                    PropertyAccessField::Expr(expr) if let Some(index) = Self::const_index(expr) => {
+                    PropertyAccessField::Expr(expr)
+                        if let Some(index) = Self::const_index(expr) =>
+                    {
                         let object = self.register_allocator.alloc();
                         self.compile_expr(access.target(), &object);
                         let value = expr_fn(self);
