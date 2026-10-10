@@ -774,10 +774,7 @@ impl Context {
     ///
     /// Interruption is an uncatchable engine error. It also covers VM
     /// re-entry from native calls, module evaluation and promise callbacks.
-    pub fn set_interrupt_flag(
-        &mut self,
-        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) {
+    pub fn set_interrupt_flag(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
         self.vm.interrupt_flag = Some(flag);
     }
 

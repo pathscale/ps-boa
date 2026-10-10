@@ -356,7 +356,7 @@ impl IntrinsicObject for ArrayBuffer {
             .build();
 
         // ES2024 resizable/transferable buffers are standard; `detached` and `transfer` ship unflagged.
-        let get_detached =BuiltInBuilder::callable(realm, Self::get_detached)
+        let get_detached = BuiltInBuilder::callable(realm, Self::get_detached)
             .name(js_string!("get detached"))
             .build();
 
