@@ -769,6 +769,11 @@ impl Math {
             return Ok(f64::NAN.into());
         }
 
+        // fdlibm's pow, which browsers follow, returns `x * x` for an exponent of 2.
+        if y == 2.0 {
+            return Ok((x * x).into());
+        }
+
         Ok(x.powf(y).into())
     }
 
