@@ -169,6 +169,9 @@ mod bits {
     pub(super) const MASK_SYMBOL: u64 = MASK_NAN | TAG_SYMBOL;
     pub(super) const MASK_BIGINT: u64 = MASK_NAN | TAG_BIGINT;
 
+    /// The bits every pointer kind (object, string, symbol, bigint: tags `0xC` to `0xF`) has set.
+    pub(super) const MASK_POINTER_KIND: u64 = MASK_NAN | TAG_OBJECT;
+
     // The masks for the different kinds of values.
     const MASK_INT32_VALUE: u64 = 0xFFFF_FFFF;
     const MASK_POINTER_VALUE: u64 = 0x0000_FFFF_FFFF_FFFF;
@@ -822,6 +825,17 @@ impl NanBoxedValue {
 impl Drop for NanBoxedValue {
     #[inline(always)]
     fn drop(&mut self) {
+        // Only the pointer kinds own anything. One inline mask test keeps dropping a number,
+        // boolean, null or undefined free of a call.
+        if self.value() & bits::MASK_POINTER_KIND == bits::MASK_POINTER_KIND {
+            self.drop_pointer();
+        }
+    }
+}
+
+impl NanBoxedValue {
+    #[inline(never)]
+    fn drop_pointer(&mut self) {
         match self.value() & bits::MASK_KIND {
             bits::MASK_OBJECT => {
                 unsafe { ManuallyDrop::into_inner(self.as_object_unchecked()) };
