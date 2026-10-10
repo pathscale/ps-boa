@@ -13,14 +13,13 @@
 //! [json]: https://www.json.org/json-en.html
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON
 
-use std::{borrow::Cow, iter::once};
+use std::borrow::Cow;
 
 use rustc_hash::FxHashSet;
 
 use boa_ast::scope::Scope;
 use boa_gc::{Finalize, Gc, Trace};
 use boa_macros::utf16;
-use itertools::Itertools;
 
 use crate::JsExpect;
 use crate::{
@@ -220,6 +219,33 @@ impl IntrinsicObject for Json {
 
 impl BuiltInObject for Json {
     const NAME: JsString = StaticJsStrings::JSON;
+}
+
+/// Concatenates `head`, the `parts` with `separator` between adjacent ones, and `tail`, copying
+/// each slice once into a buffer sized up front.
+fn join_utf16<'a>(
+    head: &[&[u16]],
+    parts: impl ExactSizeIterator<Item = &'a [u16]> + Clone,
+    separator: &[u16],
+    tail: &[&[u16]],
+) -> JsString {
+    let len = head.iter().chain(tail).map(|s| s.len()).sum::<usize>()
+        + parts.clone().map(<[u16]>::len).sum::<usize>()
+        + separator.len() * parts.len().saturating_sub(1);
+    let mut result = Vec::with_capacity(len);
+    for s in head {
+        result.extend_from_slice(s);
+    }
+    for (i, part) in parts.enumerate() {
+        if i > 0 {
+            result.extend_from_slice(separator);
+        }
+        result.extend_from_slice(part);
+    }
+    for s in tail {
+        result.extend_from_slice(s);
+    }
+    js_string!(&result[..])
 }
 
 impl Json {
@@ -1060,17 +1086,12 @@ impl Json {
                 //    with each adjacent pair of Strings separated with the code unit 0x002C (COMMA).
                 //    A comma is not inserted either before the first String or after the last String.
                 // ii. Let final be the string-concatenation of "{", properties, and "}".
-                let separator = utf16!(",");
-                let result = once(utf16!("{"))
-                    .chain(Itertools::intersperse(
-                        partial.iter().map(Vec::as_slice),
-                        separator,
-                    ))
-                    .chain(once(utf16!("}")))
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<_>>();
-                js_string!(&result[..])
+                join_utf16(
+                    &[utf16!("{")],
+                    partial.iter().map(Vec::as_slice),
+                    utf16!(","),
+                    &[utf16!("}")],
+                )
             // b. Else,
             } else {
                 // i. Let separator be the string-concatenation of the code unit 0x002C (COMMA),
@@ -1085,17 +1106,12 @@ impl Json {
                 //      the code unit 0x000A (LINE FEED), stepback, and "}".
                 let indent_vec = state.indent.to_vec();
                 let stepback_vec = stepback.to_vec();
-                let result = [utf16!("{\n"), &indent_vec[..]]
-                    .into_iter()
-                    .chain(Itertools::intersperse(
-                        partial.iter().map(Vec::as_slice),
-                        &separator,
-                    ))
-                    .chain([utf16!("\n"), &stepback_vec[..], utf16!("}")])
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<_>>();
-                js_string!(&result[..])
+                join_utf16(
+                    &[utf16!("{\n"), &indent_vec[..]],
+                    partial.iter().map(Vec::as_slice),
+                    &separator,
+                    &[utf16!("\n"), &stepback_vec[..], utf16!("}")],
+                )
             }
         };
 
@@ -1189,17 +1205,12 @@ impl Json {
                 //    with each adjacent pair of Strings separated with the code unit 0x002C (COMMA).
                 //    A comma is not inserted either before the first String or after the last String.
                 // ii. Let final be the string-concatenation of "[", properties, and "]".
-                let separator = utf16!(",");
-                let result = once(utf16!("["))
-                    .chain(Itertools::intersperse(
-                        partial.iter().map(Cow::as_ref),
-                        separator,
-                    ))
-                    .chain(once(utf16!("]")))
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<_>>();
-                js_string!(&result[..])
+                join_utf16(
+                    &[utf16!("[")],
+                    partial.iter().map(Cow::as_ref),
+                    utf16!(","),
+                    &[utf16!("]")],
+                )
             // b. Else,
             } else {
                 // i. Let separator be the string-concatenation of the code unit 0x002C (COMMA),
@@ -1212,17 +1223,12 @@ impl Json {
                 // iii. Let final be the string-concatenation of "[", the code unit 0x000A (LINE FEED), state.[[Indent]], properties, the code unit 0x000A (LINE FEED), stepback, and "]".
                 let indent_vec = state.indent.to_vec();
                 let stepback_vec = stepback.to_vec();
-                let result = [utf16!("[\n"), &indent_vec[..]]
-                    .into_iter()
-                    .chain(Itertools::intersperse(
-                        partial.iter().map(Cow::as_ref),
-                        &separator,
-                    ))
-                    .chain([utf16!("\n"), &stepback_vec[..], utf16!("]")])
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<_>>();
-                js_string!(&result[..])
+                join_utf16(
+                    &[utf16!("[\n"), &indent_vec[..]],
+                    partial.iter().map(Cow::as_ref),
+                    &separator,
+                    &[utf16!("\n"), &stepback_vec[..], utf16!("]")],
+                )
             }
         };
 
