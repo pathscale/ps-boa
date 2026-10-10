@@ -2,7 +2,7 @@
 
 use crate::{
     Context, JsResult, JsValue,
-    builtins::{BuiltInBuilder, IntrinsicObject},
+    builtins::{ArrayIterator, BuiltInBuilder, IntrinsicObject},
     context::intrinsics::Intrinsics,
     error::JsNativeError,
     js_string,
@@ -394,6 +394,13 @@ pub struct IteratorRecord {
 
     /// The result of the last call to `next`.
     last_result: IteratorResult,
+
+    /// Whether `next_method` is the intrinsic `%ArrayIteratorPrototype%.next`, so `step` can run
+    /// it directly without allocating a result object.
+    array_next: bool,
+
+    /// The value of the last non-done fast `step`; `last_result` is stale while this is `Some`.
+    fast_value: Option<JsValue>,
 }
 
 impl IteratorRecord {
@@ -401,6 +408,7 @@ impl IteratorRecord {
     #[inline]
     #[must_use]
     pub fn new(iterator: JsObject, next_method: JsValue) -> Self {
+        let array_next = ArrayIterator::is_intrinsic_next(&next_method);
         Self {
             iterator,
             next_method,
@@ -408,6 +416,8 @@ impl IteratorRecord {
             last_result: IteratorResult {
                 object: JsObject::with_null_proto(),
             },
+            array_next,
+            fast_value: None,
         }
     }
 
@@ -422,7 +432,13 @@ impl IteratorRecord {
     }
 
     /// Gets the last result object of the iterator record.
-    pub(crate) const fn last_result(&self) -> &IteratorResult {
+    pub(crate) fn last_result(&mut self, context: &mut Context) -> &IteratorResult {
+        if let Some(value) = self.fast_value.take() {
+            let object = create_iter_result_object(value, false, context);
+            self.last_result = IteratorResult {
+                object: object.as_object().expect("iter result is an object").clone(),
+            };
+        }
         &self.last_result
     }
 
@@ -441,6 +457,9 @@ impl IteratorRecord {
 
     /// Gets the current value of the `IteratorRecord`.
     pub(crate) fn value(&mut self, context: &mut Context) -> JsResult<JsValue> {
+        if let Some(value) = &self.fast_value {
+            return Ok(value.clone());
+        }
         self.set_done_on_err(|iter| iter.last_result.value(context))
     }
 
@@ -466,6 +485,7 @@ impl IteratorRecord {
             iter.done = result.complete(context)?;
 
             iter.last_result = result;
+            iter.fast_value = None;
 
             Ok(())
         })
@@ -522,6 +542,23 @@ impl IteratorRecord {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-iteratorstep
     pub(crate) fn step(&mut self, context: &mut Context) -> JsResult<bool> {
+        if self.array_next {
+            // The intrinsic `next` returns a fresh ordinary result object nobody else sees, so
+            // skipping it is unobservable; `last_result` materializes one if bytecode asks.
+            return self.set_done_on_err(|iter| {
+                let (value, done) =
+                    ArrayIterator::next_value(&iter.iterator.clone().into(), context)?;
+                iter.done = done;
+                if done {
+                    iter.fast_value = None;
+                    iter.last_result =
+                        IteratorResult::from_value(create_iter_result_object(value, true, context))?;
+                } else {
+                    iter.fast_value = Some(value);
+                }
+                Ok(done)
+            });
+        }
         self.set_done_on_err(|iter| {
             // 1. Let result be ? IteratorNext(iteratorRecord).
             let result = iter.next(None, context)?;

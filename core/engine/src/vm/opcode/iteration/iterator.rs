@@ -215,15 +215,14 @@ pub(crate) struct IteratorResult;
 impl IteratorResult {
     #[inline(always)]
     pub(crate) fn operation(value: RegisterOperand, context: &mut Context) {
-        let last_result = context
+        let mut iterator = context
             .vm
-            .frame()
+            .frame_mut()
             .iterators
-            .last()
-            .expect("iterator on the call frame must exist")
-            .last_result()
-            .object()
-            .clone();
+            .pop()
+            .expect("iterator on the call frame must exist");
+        let last_result = iterator.last_result(context).object().clone();
+        context.vm.frame_mut().iterators.push(iterator);
         context.vm.set_register(value.into(), last_result.into());
     }
 }
