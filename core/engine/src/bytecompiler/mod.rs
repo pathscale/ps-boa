@@ -1006,6 +1006,16 @@ impl<'ctx> ByteCompiler<'ctx> {
         value: &Register,
         ident: Sym,
     ) {
+        self.emit_get_property_by_name_operand(dst, receiver, value.variable(), ident);
+    }
+
+    fn emit_get_property_by_name_operand(
+        &mut self,
+        dst: &Register,
+        receiver: Option<&Register>,
+        value: RegisterOperand,
+        ident: Sym,
+    ) {
         let ic_index = self.ic.len() as u32;
 
         let name_index = self.get_or_insert_name(ident);
@@ -1018,21 +1028,15 @@ impl<'ctx> ByteCompiler<'ctx> {
             self.bytecode.emit_get_property_by_name_with_this(
                 dst.variable(),
                 receiver.variable(),
-                value.variable(),
+                value,
                 ic_index.into(),
             );
         } else if name == &StaticJsStrings::LENGTH {
-            self.bytecode.emit_get_length_property(
-                dst.variable(),
-                value.variable(),
-                ic_index.into(),
-            );
+            self.bytecode
+                .emit_get_length_property(dst.variable(), value, ic_index.into());
         } else {
-            self.bytecode.emit_get_property_by_name(
-                dst.variable(),
-                value.variable(),
-                ic_index.into(),
-            );
+            self.bytecode
+                .emit_get_property_by_name(dst.variable(), value, ic_index.into());
         }
     }
 
@@ -1446,6 +1450,32 @@ impl<'ctx> ByteCompiler<'ctx> {
                 PropertyAccess::Simple(access) => {
                     let mut compiler = self.position_guard(access.field());
 
+                    // Read a register-held target (and key) in place when nothing evaluated
+                    // between reading it and the access can assign it.
+                    match access.field() {
+                        PropertyAccessField::Const(ident) => {
+                            let ident = ident.sym();
+                            compiler.compile_expr_operand(access.target(), |compiler, object| {
+                                compiler.emit_get_property_by_name_operand(dst, None, object, ident);
+                            });
+                            return;
+                        }
+                        PropertyAccessField::Expr(expr) if Self::assigns_nothing(expr) => {
+                            compiler.compile_expr_operand(access.target(), |compiler, object| {
+                                compiler.compile_expr_operand(expr, |compiler, key| {
+                                    compiler.bytecode.emit_get_property_by_value(
+                                        dst.variable(),
+                                        key,
+                                        object,
+                                        object,
+                                    );
+                                });
+                            });
+                            return;
+                        }
+                        PropertyAccessField::Expr(_) => {}
+                    }
+
                     let object = compiler.register_allocator.alloc();
                     compiler.compile_expr(access.target(), &object);
 
@@ -1768,6 +1798,21 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// it allocates a temporary register and compiles into it.
     ///
     /// The `inner_fn` passed in will be called before the register get deallocated.
+    /// Returns `true` if evaluating `expr` cannot assign a register-held binding of this function:
+    /// it is built only from literals, identifiers, `this` and operators that do not assign. Such
+    /// bindings are never captured, so only a syntactic assignment here could change one.
+    pub(crate) fn assigns_nothing(expr: &Expression) -> bool {
+        match expr {
+            Expression::Literal(_) | Expression::Identifier(_) | Expression::This(_) => true,
+            Expression::Binary(binary) => {
+                Self::assigns_nothing(binary.lhs()) && Self::assigns_nothing(binary.rhs())
+            }
+            Expression::Unary(unary) => Self::assigns_nothing(unary.target()),
+            Expression::Parenthesized(expr) => Self::assigns_nothing(expr.expression()),
+            _ => false,
+        }
+    }
+
     pub(crate) fn compile_expr_operand(
         &mut self,
         expr: &Expression,
