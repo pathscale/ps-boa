@@ -1,6 +1,10 @@
 use crate::{
     Context, JsResult, JsString, JsSymbol, JsValue,
-    object::{JsObject, PrivateName},
+    object::{
+        JsObject, PrivateName,
+        shape::slot::{Slot, SlotAttributes},
+    },
+    property::PropertyKey,
 };
 use boa_ast::scope::{BindingLocator, BindingLocatorScope, Scope};
 use boa_gc::{Finalize, Gc, Trace};
@@ -449,6 +453,20 @@ impl<'a> Iterator for EnvironmentChainIter<'a> {
     }
 }
 
+/// The slot of `key` when it is an own data property of an ordinary global object, whose [[Get]],
+/// [[HasProperty]] and [[Set]] then reduce to reading or writing that slot.
+fn global_own_data_slot(global: &JsObject, key: &PropertyKey) -> Option<Slot> {
+    if !global.is_ordinary() {
+        return None;
+    }
+    global
+        .borrow()
+        .properties()
+        .shape
+        .lookup(key)
+        .filter(|slot| !slot.attributes.is_accessor_descriptor())
+}
+
 impl Context {
     /// Gets the corresponding runtime binding of the provided `BindingLocator`, modifying
     /// its indexes in place.
@@ -613,6 +631,9 @@ impl Context {
             BindingLocatorScope::GlobalObject => {
                 let key = locator.name().clone();
                 let obj = self.global_object();
+                if global_own_data_slot(&obj, &key.clone().into()).is_some() {
+                    return Ok(true);
+                }
                 obj.has_property(key, self)
             }
             BindingLocatorScope::GlobalDeclarative => {
@@ -659,6 +680,11 @@ impl Context {
             BindingLocatorScope::GlobalObject => {
                 let key = locator.name().clone();
                 let obj = self.global_object();
+                if let Some(slot) = global_own_data_slot(&obj, &key.clone().into()) {
+                    return Ok(Some(
+                        obj.borrow().properties().storage[slot.index as usize].clone(),
+                    ));
+                }
                 obj.try_get(key, self)
             }
             BindingLocatorScope::GlobalDeclarative => {
@@ -692,6 +718,14 @@ impl Context {
             BindingLocatorScope::GlobalObject => {
                 let key = locator.name().clone();
                 let obj = self.global_object();
+                // OrdinarySet on an own writable data property of an ordinary object only replaces
+                // its value: write the slot instead of redefining the property.
+                if let Some(slot) = global_own_data_slot(&obj, &key.clone().into())
+                    && slot.attributes.contains(SlotAttributes::WRITABLE)
+                {
+                    obj.borrow_mut().properties_mut().storage[slot.index as usize] = value;
+                    return Ok(());
+                }
                 obj.set(key, value, strict, self)?;
             }
             BindingLocatorScope::GlobalDeclarative => {
