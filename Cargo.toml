@@ -269,3 +269,5 @@ style = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+# Trait methods declared `async` must be implemented `async` even when the body never awaits.
+unused_async_trait_impl = "allow"

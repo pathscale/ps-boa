@@ -453,8 +453,8 @@ impl<'a> Iterator for EnvironmentChainIter<'a> {
     }
 }
 
-/// The slot of `key` when it is an own data property of an ordinary global object, whose [[Get]],
-/// [[HasProperty]] and [[Set]] then reduce to reading or writing that slot.
+/// The slot of `key` when it is an own data property of an ordinary global object, whose `[[Get]]`,
+/// `[[HasProperty]]` and `[[Set]]` then reduce to reading or writing that slot.
 fn global_own_data_slot(global: &JsObject, key: &PropertyKey) -> Option<Slot> {
     if !global.is_ordinary() {
         return None;

@@ -2178,8 +2178,8 @@ impl RegExp {
     /// runs a sticky match at every code unit.
     fn split_by_search(
         splitter: &JsObject<RegExp>,
-        s: &JsString,
-        a: &JsObject,
+        string: &JsString,
+        array: &JsObject,
         lim: u32,
         unicode: bool,
         context: &mut Context,
@@ -2188,7 +2188,7 @@ impl RegExp {
         let full_unicode =
             rx.flags.contains(RegExpFlags::UNICODE) || rx.flags.contains(RegExpFlags::UNICODE_SETS);
         let widened;
-        let (input, utf16): (&[u16], bool) = match s.as_str().variant() {
+        let (input, utf16): (&[u16], bool) = match string.as_str().variant() {
             JsStrVariant::Latin1(bytes) => {
                 widened = bytes
                     .iter()
@@ -2209,34 +2209,38 @@ impl RegExp {
                 rx.matcher.find_from_ucs2(input, q).next()
             };
             // The first q at which a sticky match succeeds, if any is below size.
-            let Some(m) = found.filter(|m| m.start() < size) else {
+            let Some(found) = found.filter(|found| found.start() < size) else {
                 break;
             };
-            let e = m.end().min(size);
-            if e == p {
-                q = advance_string_index(s, m.start() as u64, unicode) as usize;
+            let end = found.end().min(size);
+            if end == p {
+                q = advance_string_index(string, found.start() as u64, unicode) as usize;
                 continue;
             }
-            a.create_data_property_or_throw(length_a, s.get_expect(p..m.start()), context)?;
+            array.create_data_property_or_throw(
+                length_a,
+                string.get_expect(p..found.start()),
+                context,
+            )?;
             length_a += 1;
             if length_a == lim {
-                return Ok(a.clone().into());
+                return Ok(array.clone().into());
             }
-            p = e;
-            for capture in &m.captures {
+            p = end;
+            for capture in &found.captures {
                 let value = capture
                     .clone()
-                    .map_or_else(JsValue::undefined, |range| s.get_expect(range).into());
-                a.create_data_property_or_throw(length_a, value, context)?;
+                    .map_or_else(JsValue::undefined, |range| string.get_expect(range).into());
+                array.create_data_property_or_throw(length_a, value, context)?;
                 length_a += 1;
                 if length_a == lim {
-                    return Ok(a.clone().into());
+                    return Ok(array.clone().into());
                 }
             }
             q = p;
         }
-        a.create_data_property_or_throw(length_a, s.get_expect(p..size), context)?;
-        Ok(a.clone().into())
+        array.create_data_property_or_throw(length_a, string.get_expect(p..size), context)?;
+        Ok(array.clone().into())
     }
 
     /// [`RegExp.prototype.compile ( pattern, flags )`][spec]
