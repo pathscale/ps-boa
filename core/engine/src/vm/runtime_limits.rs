@@ -10,8 +10,19 @@ pub struct RuntimeLimits {
     /// Max backtrace count in exception.
     backtrace_limit: usize,
 
-    /// Max function recursion limit
+    /// Max JavaScript call-frame recursion.
+    ///
+    /// This counts VM frames only. Native re-entry has its own limit.
     recursion: usize,
+
+    /// Max nested `Context::run` re-entries from native calls.
+    ///
+    /// Accessors and other host-to-JS calls nest on the Rust stack. That is
+    /// not a JavaScript frame (V8 does not count it). It has its own cap so a
+    /// recursive getter throws `RangeError` before the thread overflows. The
+    /// default matches the historical combined budget: a recursion limit of
+    /// 512 stopped getters at about 256 nested runs.
+    host_recursion: usize,
 }
 
 impl Default for RuntimeLimits {
@@ -20,6 +31,7 @@ impl Default for RuntimeLimits {
         Self {
             loop_iteration: u64::MAX,
             recursion: 512,
+            host_recursion: 256,
             backtrace_limit: 50,
             stack_size: 1024 * 10,
         }
@@ -82,16 +94,29 @@ impl RuntimeLimits {
         self.stack_size = value;
     }
 
-    /// Get recursion limit.
+    /// Get the JavaScript call-frame limit.
     #[inline]
     #[must_use]
     pub const fn recursion_limit(&self) -> usize {
         self.recursion
     }
 
-    /// Set recursion limit before an error is thrown.
+    /// Set the JavaScript call-frame limit before an error is thrown.
     #[inline]
     pub fn set_recursion_limit(&mut self, value: usize) {
         self.recursion = value;
+    }
+
+    /// Get the native re-entry limit.
+    #[inline]
+    #[must_use]
+    pub const fn host_recursion_limit(&self) -> usize {
+        self.host_recursion
+    }
+
+    /// Set the native re-entry limit before an error is thrown.
+    #[inline]
+    pub fn set_host_recursion_limit(&mut self, value: usize) {
+        self.host_recursion = value;
     }
 }
