@@ -9,6 +9,44 @@ use crate::{
     vm::opcode::{IndexOperand, Operation, RegisterOperand},
 };
 
+/// `base[index]` for an array's dense element or a typed array element (whose [[Get]] for a valid
+/// integer index never reaches the prototype chain), read without taking a reference to `base`.
+#[inline(always)]
+fn dense_element(base: &JsValue, index: u32) -> JsResult<Option<JsValue>> {
+    let Some(base) = base.as_object_ref() else {
+        return Ok(None);
+    };
+    if base.is_array() {
+        Ok(base.borrow().properties().get_dense_property(index))
+    } else if base.is::<TypedArray>() {
+        Ok(Some(
+            typed_array_get_element(&base, f64::from(index))?.unwrap_or_default(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+/// An inline cache hit for a property without a getter on an object, read without taking a
+/// reference to the object.
+#[inline(always)]
+fn cached_property(object: &JsValue, index: IndexOperand, context: &Context) -> Option<JsValue> {
+    let object = object.as_object_ref()?;
+    let ic = &context.vm.frame().code_block().ic[usize::from(index)];
+    let object = object.borrow();
+    let (shape, slot) = ic.get(object.shape())?;
+    if slot.attributes.has_get() {
+        return None;
+    }
+    Some(if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
+        let prototype = shape.prototype().expect("prototype should have value");
+        let prototype = prototype.borrow();
+        prototype.properties().storage[slot.index as usize].clone()
+    } else {
+        object.properties().storage[slot.index as usize].clone()
+    })
+}
+
 fn get_by_name<const LENGTH: bool>(
     (dst, object, receiver, index): (RegisterOperand, &JsValue, &JsValue, IndexOperand),
     context: &mut Context,
@@ -98,19 +136,10 @@ fn get_by_value<const PUSH_KEY: bool>(
     // property key conversion.
     if let Some(index) = context.vm.get_register(key.into()).as_i32()
         && let Ok(index) = u32::try_from(index)
-        && let Some(base) = context.vm.get_register(object.into()).as_object()
+        && let Some(element) = dense_element(context.vm.get_register(object.into()), index)?
     {
-        let element = if base.is_array() {
-            base.borrow().properties().get_dense_property(index)
-        } else if base.is::<TypedArray>() {
-            Some(typed_array_get_element(&base, f64::from(index))?.unwrap_or_default())
-        } else {
-            None
-        };
-        if let Some(element) = element {
-            context.vm.set_register(dst.into(), element);
-            return Ok(());
-        }
+        context.vm.set_register(dst.into(), element);
+        return Ok(());
     }
 
     let key_value = context.vm.get_register(key.into()).clone();
@@ -189,6 +218,16 @@ impl GetLengthProperty {
         (dst, object, index): (RegisterOperand, RegisterOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
+        let value = context.vm.get_register(object.into());
+        let length = value.as_object_ref().and_then(|object| {
+            object
+                .is_array()
+                .then(|| object.borrow().properties().storage[0].clone())
+        });
+        if let Some(length) = length {
+            context.vm.set_register(dst.into(), length);
+            return Ok(());
+        }
         let object = context.vm.get_register(object.into()).clone();
         get_by_name::<true>((dst, &object, &object, index), context)
     }
@@ -213,6 +252,12 @@ impl GetPropertyByName {
         (dst, object, index): (RegisterOperand, RegisterOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
+        if let Some(result) =
+            cached_property(context.vm.get_register(object.into()), index, context)
+        {
+            context.vm.set_register(dst.into(), result);
+            return Ok(());
+        }
         let object = context.vm.get_register(object.into()).clone();
         get_by_name::<false>((dst, &object, &object, index), context)
     }
@@ -242,6 +287,11 @@ impl GetPropertyByNameWithThis {
         ),
         context: &mut Context,
     ) -> JsResult<()> {
+        if let Some(result) = cached_property(context.vm.get_register(value.into()), index, context)
+        {
+            context.vm.set_register(dst.into(), result);
+            return Ok(());
+        }
         let receiver = context.vm.get_register(receiver.into()).clone();
         let object = context.vm.get_register(value.into()).clone();
         get_by_name::<false>((dst, &object, &receiver, index), context)
@@ -324,25 +374,20 @@ impl GetPropertyByIndex {
         context: &mut Context,
     ) -> JsResult<()> {
         let index = u32::from(index);
-        let base = context.vm.get_register(object.into()).clone();
 
         // Fast path, as in `GetPropertyByValue`.
-        if let Some(object) = base.as_object() {
-            let element = if object.is_array() {
-                object.borrow().properties().get_dense_property(index)
-            } else if object.is::<TypedArray>() {
-                Some(typed_array_get_element(&object, f64::from(index))?.unwrap_or_default())
-            } else {
-                None
-            };
-            if let Some(element) = element {
-                context.vm.set_register(dst.into(), element);
-                return Ok(());
-            }
-        } else if let Some(string) = base.as_string() {
+        if let Some(element) = dense_element(context.vm.get_register(object.into()), index)? {
+            context.vm.set_register(dst.into(), element);
+            return Ok(());
+        }
+
+        let base = context.vm.get_register(object.into()).clone();
+        if let Some(string) = base.as_string() {
             let value = string
                 .code_unit_at(index as usize)
-                .map_or_else(JsValue::undefined, |char| js_string!([char].as_slice()).into());
+                .map_or_else(JsValue::undefined, |char| {
+                    js_string!([char].as_slice()).into()
+                });
             context.vm.set_register(dst.into(), value);
             return Ok(());
         }

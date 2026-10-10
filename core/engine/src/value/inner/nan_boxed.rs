@@ -665,6 +665,15 @@ impl NanBoxedValue {
         }
     }
 
+    /// Returns the value as a [`JsObject`] sharing this value's reference, valid while `self` is.
+    #[must_use]
+    #[inline(always)]
+    pub(crate) fn as_object_ref(&self) -> Option<ManuallyDrop<JsObject>> {
+        // SAFETY: the inner address holds a valid JsObject for as long as `self` holds it.
+        self.is_object()
+            .then(|| unsafe { self.as_object_unchecked() })
+    }
+
     /// Returns the value as a boxed [`JsObject`].
     #[must_use]
     #[inline(always)]
