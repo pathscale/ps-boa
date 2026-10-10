@@ -23,6 +23,7 @@ use crate::{
     symbol::JsSymbol,
     value::JsValue,
 };
+use arrayvec::ArrayVec;
 use boa_gc::{Finalize, Trace};
 use boa_macros::{js_str, utf16};
 use boa_parser::lexer::regex::RegExpFlags;
@@ -1240,12 +1241,21 @@ impl RegExp {
         // 13.b. Let inputIndex be the index into input of the character that was obtained from element lastIndex of S.
         // 13.c. Let r be matcher(input, inputIndex).
         let r: Option<regress::Match> = match (full_unicode, input.as_str().variant()) {
-            (true | false, JsStrVariant::Latin1(_)) => {
+            (true | false, JsStrVariant::Latin1(bytes)) => {
                 // TODO: Currently regress does not support latin1 encoding.
-                let input = input.to_vec();
+                // A short input is widened on the stack rather than in a new allocation.
+                let mut short = ArrayVec::<u16, 256>::new();
+                let long;
+                let input: &[u16] = if bytes.len() <= short.capacity() {
+                    short.extend(bytes.iter().map(|&byte| u16::from(byte)));
+                    &short
+                } else {
+                    long = input.to_vec();
+                    &long
+                };
 
                 // NOTE: We can use the faster ucs2 variant since there will never be two byte unicode.
-                matcher.find_from_ucs2(&input, last_index as usize).next()
+                matcher.find_from_ucs2(input, last_index as usize).next()
             }
             (true, JsStrVariant::Utf16(input)) => {
                 matcher.find_from_utf16(input, last_index as usize).next()
