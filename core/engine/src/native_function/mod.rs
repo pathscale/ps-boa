@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 
+use arrayvec::ArrayVec;
 use boa_gc::{Finalize, Gc, Trace, custom_trace};
 use boa_string::JsString;
 
@@ -330,10 +331,21 @@ pub(crate) fn native_function_call(
     argument_count: usize,
     context: &mut InternalMethodCallContext<'_>,
 ) -> JsResult<CallValue> {
-    let args = context
-        .vm
-        .stack
-        .calling_convention_pop_arguments(argument_count);
+    let mut few = ArrayVec::<JsValue, 8>::new();
+    let many;
+    let args: &[JsValue] = if argument_count <= few.capacity() {
+        context
+            .vm
+            .stack
+            .calling_convention_pop_arguments_into(argument_count, &mut few);
+        &few
+    } else {
+        many = context
+            .vm
+            .stack
+            .calling_convention_pop_arguments(argument_count);
+        &many
+    };
     let _func = context.vm.stack.pop();
     let this = context.vm.stack.pop();
 
