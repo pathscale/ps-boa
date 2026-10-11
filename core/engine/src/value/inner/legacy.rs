@@ -40,14 +40,17 @@ unsafe impl Trace for EnumBasedValue {
 }
 
 impl EnumBasedValue {
-    /// Drops the value. This representation has no unchecked path.
+    /// Drops the value; an object drops without the collection check.
     ///
     /// # Safety
     ///
-    /// Always safe; `unsafe` matches the NaN-boxed representation.
+    /// The caller is not running inside a garbage collection sweep on this thread.
     #[inline]
     pub(crate) unsafe fn release_outside_collection(self) {
-        drop(self);
+        if let Self::Object(object) = self {
+            // SAFETY: forwarded from the caller.
+            unsafe { object.release_outside_collection() };
+        }
     }
 
     /// Returns a `InnerValue` from a Null.
