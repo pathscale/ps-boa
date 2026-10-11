@@ -532,6 +532,8 @@ impl Vm {
             jit_frame: boa_jit::baseline::JitFrame {
                 regs: std::ptr::null_mut(),
                 argc: 0,
+                stack: std::ptr::null_mut(),
+                depth: 0,
             },
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
