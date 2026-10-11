@@ -2181,10 +2181,17 @@ generate_opcodes! {
         index: IndexOperand
     },
 
-    /// Reserved [`Opcode`].
-    Reserved1 => Reserved,
-    /// Reserved [`Opcode`].
-    Reserved2 => Reserved,
+    /// Call a pure `Math` function, or fall back to the generic property call.
+    ///
+    /// - Operands:
+    ///   - operands: `CallMathOperands`
+    CallMath { operands: CallMathOperands },
+
+    /// Read `Math.<name>` for a later `CallMath`, or note that `Math` is pristine.
+    ///
+    /// - Operands:
+    ///   - operands: `PrepareMathOperands`
+    PrepareMath { operands: PrepareMathOperands },
     /// Reserved [`Opcode`].
     Reserved3 => Reserved,
     /// Reserved [`Opcode`].

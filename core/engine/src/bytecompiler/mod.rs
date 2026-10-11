@@ -46,7 +46,10 @@ use crate::{
     vm::{
         CallFrame, CodeBlock, CodeBlockFlags, Constant, GeneratorResumeKind, GlobalFunctionBinding,
         Handler, InlineCache,
-        opcode::{Address, BindingOpcode, BytecodeEmitter, RegisterOperand},
+        opcode::{
+            Address, BindingOpcode, BytecodeEmitter, CallMathOperands, PrepareMathOperands,
+            RegisterOperand,
+        },
         source_info::{SourceInfo, SourceMap, SourceMapBuilder, SourcePath},
     },
 };
@@ -2681,12 +2684,145 @@ impl<'ctx> ByteCompiler<'ctx> {
         dst
     }
 
+    /// Emit `CallMath` for `Math.<pure>(...)` when `Math` is the global binding.
+    ///
+    /// Argument expressions are compiled first, so their side effects run before the
+    /// `Math` lookup that `CallMath` performs.
+    fn try_emit_call_math(&mut self, call: &Call, dst: CallResultDest<'_>) -> bool {
+        if self.in_with {
+            return false;
+        }
+        let call_args = call.args();
+        if call_args.len() > 3
+            || call_args
+                .iter()
+                .any(|arg| matches!(arg, Expression::Spread(_)))
+        {
+            return false;
+        }
+        let Expression::PropertyAccess(access) = call.function().flatten() else {
+            return false;
+        };
+        let PropertyAccess::Simple(access) = access else {
+            return false;
+        };
+        let PropertyAccessField::Const(field) = access.field() else {
+            return false;
+        };
+        let Expression::Identifier(target) = access.target().flatten() else {
+            return false;
+        };
+        let field_name = self.resolve_identifier_expect(*field);
+        let target_name = self.resolve_identifier_expect(*target);
+        if target_name != StaticJsStrings::MATH {
+            return false;
+        }
+        let math_binding = self.lexical_scope.get_identifier_reference(target_name);
+        if !math_binding.is_global_object() {
+            return false;
+        }
+        let Some(function) = crate::builtins::math::Math::pure_id(&field_name) else {
+            return false;
+        };
+
+        let mut compiler = self.position_guard(call);
+        let binding_index = match compiler.get_binding(&math_binding) {
+            BindingKind::Global(index) => index,
+            BindingKind::Stack(_) | BindingKind::Local(_) => {
+                unreachable!("Math resolves to the global object")
+            }
+        };
+
+        // The generic call reads `Math.<name>` before evaluating the arguments.
+        let callee = compiler.register_allocator.alloc();
+        let this = compiler.register_allocator.alloc();
+        compiler.bytecode.emit_prepare_math(PrepareMathOperands {
+            callee: callee.variable(),
+            this: this.variable(),
+            function,
+            binding_index: binding_index.into(),
+        });
+
+        let mut arg_ops = [RegisterOperand::new(0); 3];
+        let mut owned: [Option<Register>; 3] = [None, None, None];
+        for (i, arg) in call_args.iter().enumerate() {
+            // A register-held binding is read in place only when no later argument can
+            // assign it, so `Math.max(x, x = 5)` still passes the old `x`.
+            if call_args[i + 1..].iter().all(Self::assigns_nothing)
+                && let Some(op) = compiler.operand_register(arg)
+            {
+                arg_ops[i] = op;
+                continue;
+            }
+            let reg = compiler.register_allocator.alloc();
+            compiler.compile_expr(arg, &reg);
+            arg_ops[i] = reg.variable();
+            owned[i] = Some(reg);
+        }
+
+        let (dst_op, dst_reg) = match dst {
+            CallResultDest::Register(reg) => (reg.variable(), None),
+            CallResultDest::Discard | CallResultDest::Stack => {
+                let reg = compiler.register_allocator.alloc();
+                let op = reg.variable();
+                (op, Some(reg))
+            }
+        };
+
+        compiler.bytecode.emit_call_math(CallMathOperands {
+            dst: dst_op,
+            callee: callee.variable(),
+            this: this.variable(),
+            function,
+            argc: call_args.len() as u8,
+            args: arg_ops,
+        });
+        if let CallResultDest::Stack = dst
+            && let Some(reg) = dst_reg.as_ref()
+        {
+            compiler.push_from_register(reg);
+        }
+        for reg in owned.into_iter().flatten() {
+            compiler.register_allocator.dealloc(reg);
+        }
+        if let Some(reg) = dst_reg {
+            compiler.register_allocator.dealloc(reg);
+        }
+        compiler.register_allocator.dealloc(this);
+        compiler.register_allocator.dealloc(callee);
+        true
+    }
+
+    /// A register that already holds `expr`, using the same rules as `compile_expr_operand`.
+    fn operand_register(&mut self, expr: &Expression) -> Option<RegisterOperand> {
+        let Expression::Identifier(name) = expr else {
+            return None;
+        };
+        let name = self.resolve_identifier_expect(*name);
+        let binding = self.lexical_scope.get_identifier_reference(name);
+        if let BindingKind::Local(Some(index)) = self.get_binding(&binding) {
+            return Some(index.into());
+        }
+        if !self.in_with
+            && let Some(&cached) = self.const_binding_cache.get(&binding.locator())
+        {
+            return Some(cached.into());
+        }
+        None
+    }
+
     fn call(&mut self, callable: Callable<'_>, dst: CallResultDest<'_>) {
         #[derive(PartialEq)]
         enum CallKind {
             CallEval,
             Call,
             New,
+        }
+
+        if let Callable::Call(call) = callable
+            && self.try_emit_call_math(call, dst)
+        {
+            return;
         }
 
         let (call, mut kind) = match callable {

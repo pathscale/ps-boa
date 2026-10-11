@@ -81,8 +81,6 @@ fn width(opcode: Opcode) -> Width {
         | Opcode::IteratorNext
         | Opcode::CreatePromiseCapability
         | Opcode::PopPrivateEnvironment
-        | Opcode::Reserved1
-        | Opcode::Reserved2
         | Opcode::Reserved3
         | Opcode::Reserved4
         | Opcode::Reserved5
@@ -324,6 +322,8 @@ fn width(opcode: Opcode) -> Width {
         Opcode::JumpTable | Opcode::ConcatToString | Opcode::PushPrivateEnvironment => {
             Width::Vec4 { header: 4 }
         }
+        Opcode::PrepareMath => Width::Fixed(13),
+        Opcode::CallMath => Width::Fixed(26),
         Opcode::CopyDataProperties => Width::Vec4 { header: 8 },
         Opcode::TemplateCreate => Width::Vec4 { header: 12 },
     }
@@ -423,6 +423,14 @@ fn register_u32(errors: &mut Vec<String>, pc: u32, op: &str, register_count: u32
     }
 }
 
+fn math_function(errors: &mut Vec<String>, pc: u32, op: &str, id: u8) {
+    if usize::from(id) >= crate::builtins::math::Math::PURE_COUNT {
+        errors.push(format!(
+            "pc {pc:06x}: {op}: Math function id {id} out of range"
+        ));
+    }
+}
+
 fn binding(errors: &mut Vec<String>, pc: u32, op: &str, index: u32, len: usize) {
     if index as usize >= len {
         errors.push(format!(
@@ -505,9 +513,7 @@ fn check_instruction(
     };
 
     match &item.instruction {
-        Instruction::Reserved1
-        | Instruction::Reserved2
-        | Instruction::Reserved3
+        Instruction::Reserved3
         | Instruction::Reserved4
         | Instruction::Reserved5
         | Instruction::Reserved6
@@ -884,6 +890,33 @@ fn check_instruction(
         | Instruction::DeleteName { dst, binding_index } => {
             reg(errors, *dst);
             binding(errors, pc, op, u32::from(*binding_index), bindings_len);
+        }
+        Instruction::PrepareMath { operands } => {
+            reg(errors, operands.callee);
+            reg(errors, operands.this);
+            math_function(errors, pc, op, operands.function);
+            binding(
+                errors,
+                pc,
+                op,
+                u32::from(operands.binding_index),
+                bindings_len,
+            );
+        }
+        Instruction::CallMath { operands } => {
+            reg(errors, operands.dst);
+            reg(errors, operands.callee);
+            reg(errors, operands.this);
+            math_function(errors, pc, op, operands.function);
+            if operands.argc > 3 {
+                errors.push(format!(
+                    "pc {pc:06x}: {op}: argc {} exceeds 3",
+                    operands.argc
+                ));
+            }
+            for arg in operands.args.iter().take(usize::from(operands.argc)) {
+                reg(errors, *arg);
+            }
         }
         Instruction::GetNameGlobal {
             dst,

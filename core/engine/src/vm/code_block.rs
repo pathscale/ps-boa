@@ -885,9 +885,9 @@ impl CodeBlock {
             | Instruction::PopPrivateEnvironment
             | Instruction::Generator
             | Instruction::AsyncGenerator => String::new(),
-            Instruction::Reserved1
-            | Instruction::Reserved2
-            | Instruction::Reserved3
+            Instruction::CallMath { operands } => operands.to_string(),
+            Instruction::PrepareMath { operands } => operands.to_string(),
+            Instruction::Reserved3
             | Instruction::Reserved4
             | Instruction::Reserved5
             | Instruction::Reserved6

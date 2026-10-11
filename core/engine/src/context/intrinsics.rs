@@ -1292,6 +1292,13 @@ impl IntrinsicObjects {
         self.math.clone()
     }
 
+    /// `true` when `object` is this realm's `%Math%` intrinsic.
+    #[inline]
+    #[must_use]
+    pub(crate) fn is_math(&self, object: &JsObject) -> bool {
+        JsObject::equals(&self.math, object)
+    }
+
     /// Gets the [`%JSON%`][spec] intrinsic object.
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-json
