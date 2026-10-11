@@ -247,6 +247,16 @@ impl WeakShape {
         self.upgrade().as_ref().map_or(0, Shape::to_addr_usize)
     }
 
+    /// `true` while the [`Shape`] has not been collected. Takes no reference.
+    #[inline]
+    #[must_use]
+    pub(crate) fn is_alive(&self) -> bool {
+        match self {
+            WeakShape::Shared(shape) => shape.is_alive(),
+            WeakShape::Unique(shape) => shape.is_alive(),
+        }
+    }
+
     /// Return location in memory of the [`Shape`].
     ///
     /// Returns `0` if the shape has been freed.

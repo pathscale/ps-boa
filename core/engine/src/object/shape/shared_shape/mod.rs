@@ -484,6 +484,13 @@ impl WeakSharedShape {
     /// or [`None`] if the value was already garbage collected.
     #[inline]
     #[must_use]
+    pub(crate) fn is_alive(&self) -> bool {
+        self.inner.is_upgradable()
+    }
+
+    /// Upgrade returns a pointer for the internal value if it is still live.
+    #[inline]
+    #[must_use]
     pub(crate) fn upgrade(&self) -> Option<SharedShape> {
         Some(SharedShape {
             inner: self.inner.upgrade()?,
