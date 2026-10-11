@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), forbid(clippy::unwrap_used))]
 
+pub mod baseline;
 pub mod ir;
 mod lower;
 mod num;
@@ -17,6 +18,25 @@ use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use std::cell::RefCell;
+use std::sync::OnceLock;
+
+static HELPERS: OnceLock<baseline::Helpers> = OnceLock::new();
+
+/// Registers the engine helpers baseline code calls. Only the first registration counts;
+/// it must come before the first compile on any thread.
+pub fn set_helpers(helpers: baseline::Helpers) {
+    let _ = HELPERS.set(helpers);
+}
+
+/// Lower a function body to baseline code. Returns `None` when the helpers are not
+/// registered, a jump target is not an instruction, or the host cannot emit code.
+#[must_use]
+pub fn compile_baseline(insns: &[baseline::Insn]) -> Option<baseline::BaselineFn> {
+    if !baseline::validate(insns) {
+        return None;
+    }
+    with_jit(|state| state.compile_baseline(insns)).flatten()
+}
 
 /// Machine code for a numeric leaf.
 ///
@@ -50,6 +70,7 @@ struct JitState {
     builder_ctx: FunctionBuilderContext,
     rem: FuncId,
     to_int32: FuncId,
+    helpers: Option<(FuncId, FuncId)>,
     next_id: u32,
     pointer_type: cranelift_codegen::ir::Type,
 }
@@ -93,6 +114,11 @@ impl JitState {
         let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
         jit_builder.symbol("boa_jit_rem", num::rem_addr());
         jit_builder.symbol("boa_jit_to_int32", num::to_int32_addr());
+        let registered = HELPERS.get().copied();
+        if let Some(helpers) = registered {
+            jit_builder.symbol("boa_jit_step", helpers.step as *const u8);
+            jit_builder.symbol("boa_jit_branch", helpers.branch as *const u8);
+        }
         let mut module = JITModule::new(jit_builder);
         let pointer_type = module.target_config().pointer_type();
         let rem = declare_import(
@@ -102,6 +128,20 @@ impl JitState {
             types::F64,
         )?;
         let to_int32 = declare_import(&mut module, "boa_jit_to_int32", &[types::F64], types::I32)?;
+        let helpers = match registered {
+            Some(_) => {
+                let i32s = |n| vec![types::I32; n];
+                let mut step_params = vec![pointer_type];
+                step_params.extend(i32s(3));
+                let mut branch_params = vec![pointer_type];
+                branch_params.extend(i32s(4));
+                let step = declare_import(&mut module, "boa_jit_step", &step_params, types::I32)?;
+                let branch =
+                    declare_import(&mut module, "boa_jit_branch", &branch_params, types::I32)?;
+                Some((step, branch))
+            }
+            None => None,
+        };
         let ctx = module.make_context();
         Some(Self {
             module,
@@ -109,6 +149,7 @@ impl JitState {
             builder_ctx: FunctionBuilderContext::new(),
             rem,
             to_int32,
+            helpers,
             next_id: 0,
             pointer_type,
         })
@@ -148,6 +189,39 @@ impl JitState {
         // SAFETY: `ptr` is finalized code for `NumericLeafFn`. This thread's
         // `JITModule` owns the bytes until the thread exits.
         Some(unsafe { std::mem::transmute::<*const u8, NumericLeafFn>(ptr) })
+    }
+}
+
+impl JitState {
+    fn compile_baseline(&mut self, insns: &[baseline::Insn]) -> Option<baseline::BaselineFn> {
+        let (step, branch) = self.helpers?;
+        let mut signature = self.module.make_signature();
+        signature.params.push(AbiParam::new(self.pointer_type));
+        signature.params.push(AbiParam::new(types::I32));
+        signature.returns.push(AbiParam::new(types::I32));
+        let name = format!("boa_jit_{}", self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &signature)
+            .ok()?;
+        self.ctx.func.signature = signature;
+        self.ctx.func.name = UserFuncName::user(0, id.as_u32());
+        {
+            let mut builder =
+                cranelift_frontend::FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
+            baseline::emit(&mut builder, &mut self.module, step, branch, insns);
+            builder.seal_all_blocks();
+            builder.finalize(self.module.target_config());
+        }
+        let defined = self.module.define_function(id, &mut self.ctx);
+        self.module.clear_context(&mut self.ctx);
+        defined.ok()?;
+        self.module.finalize_definitions().ok()?;
+        let ptr = self.module.get_finalized_function(id);
+        // SAFETY: `ptr` is finalized code for `BaselineFn`. This thread's `JITModule` owns
+        // the bytes until the thread exits.
+        Some(unsafe { std::mem::transmute::<*const u8, baseline::BaselineFn>(ptr) })
     }
 }
 
