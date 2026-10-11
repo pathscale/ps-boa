@@ -1095,6 +1095,9 @@ pub(crate) fn function_call(
         );
     }
 
+    #[cfg(feature = "jit")]
+    crate::vm::jit::mark_entry(context);
+
     Ok(CallValue::Ready)
 }
 
