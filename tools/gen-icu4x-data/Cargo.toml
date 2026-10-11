@@ -24,6 +24,7 @@ simple_logger.workspace = true
 
 # Components
 
+icu_calendar = { workspace = true, features = ["datagen"] }
 icu_casemap = { workspace = true, features = ["datagen"] }
 icu_collator = { workspace = true, features = ["datagen"] }
 icu_datetime = { workspace = true, features = ["datagen"] }
