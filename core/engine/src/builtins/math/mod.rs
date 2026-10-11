@@ -111,25 +111,110 @@ impl BuiltInObject for Math {
 impl Math {
     /// The common Math functions that, given only numbers, run no user code and cannot
     /// throw. A `CallMath` function id is an index into this table.
-    const PURE: [(&'static str, NativeFunctionPointer); 17] = [
-        ("max", Math::max),
-        ("min", Math::min),
-        ("floor", Math::floor),
-        ("ceil", Math::ceil),
-        ("abs", Math::abs),
-        ("sqrt", Math::sqrt),
-        ("sin", Math::sin),
-        ("cos", Math::cos),
-        ("round", Math::round),
-        ("trunc", Math::trunc),
-        ("atan2", Math::atan2),
-        ("hypot", Math::hypot),
-        ("exp", Math::exp),
-        ("pow", Math::pow),
-        ("sign", Math::sign),
-        ("log", Math::log),
-        ("imul", Math::imul),
+    ///
+    /// The third field computes the same result from Number arguments directly, where the
+    /// intrinsic is that one f64 operation; `None` sends the call to the intrinsic.
+    const PURE: [(
+        &'static str,
+        NativeFunctionPointer,
+        Option<fn(&[f64]) -> f64>,
+    ); 17] = [
+        (
+            "max",
+            Math::max,
+            Some(|n| {
+                n.iter()
+                    .fold(f64::NEG_INFINITY, |h, &x| Self::max_step(h, x))
+            }),
+        ),
+        (
+            "min",
+            Math::min,
+            Some(|n| n.iter().fold(f64::INFINITY, |l, &x| Self::min_step(l, x))),
+        ),
+        (
+            "floor",
+            Math::floor,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.floor())),
+        ),
+        (
+            "ceil",
+            Math::ceil,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.ceil())),
+        ),
+        (
+            "abs",
+            Math::abs,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.abs())),
+        ),
+        (
+            "sqrt",
+            Math::sqrt,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.sqrt())),
+        ),
+        (
+            "sin",
+            Math::sin,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.sin())),
+        ),
+        (
+            "cos",
+            Math::cos,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.cos())),
+        ),
+        ("round", Math::round, None),
+        (
+            "trunc",
+            Math::trunc,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.trunc())),
+        ),
+        ("atan2", Math::atan2, None),
+        ("hypot", Math::hypot, None),
+        (
+            "exp",
+            Math::exp,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.exp())),
+        ),
+        ("pow", Math::pow, None),
+        ("sign", Math::sign, None),
+        (
+            "log",
+            Math::log,
+            Some(|n| n.first().map_or(f64::NAN, |x| x.ln())),
+        ),
+        ("imul", Math::imul, None),
     ];
+
+    /// One step of `Math.max`: `NaN` sticks, and +0 is above -0.
+    fn max_step(highest: f64, num: f64) -> f64 {
+        if highest.is_nan() {
+            highest
+        } else if num.is_nan() {
+            f64::NAN
+        } else if highest == 0f64 && num == 0f64 && highest.signum() != num.signum() {
+            0f64
+        } else {
+            highest.max(num)
+        }
+    }
+
+    /// One step of `Math.min`: `NaN` sticks, and -0 is below +0.
+    fn min_step(lowest: f64, num: f64) -> f64 {
+        if lowest.is_nan() {
+            lowest
+        } else if num.is_nan() {
+            f64::NAN
+        } else if lowest == 0f64 && num == 0f64 && lowest.signum() != num.signum() {
+            -0f64
+        } else {
+            lowest.min(num)
+        }
+    }
+
+    /// `CallMath` function `id` on Number arguments, when it has a direct form.
+    pub(crate) fn call_pure_numbers(id: u8, args: &[f64]) -> Option<f64> {
+        Some((Self::PURE[usize::from(id)].2?)(args))
+    }
 
     /// Number of `CallMath` function ids. Only the bytecode verifier reads it.
     #[cfg(debug_assertions)]
@@ -138,14 +223,14 @@ impl Math {
     /// Returns `true` if `f` is one of the common Math functions that, given only numbers, run
     /// no user code and cannot throw.
     pub(crate) fn is_pure_on_numbers(f: &NativeFunction) -> bool {
-        Self::PURE.iter().any(|&(_, pure)| f.is_fn_ptr(pure))
+        Self::PURE.iter().any(|&(_, pure, _)| f.is_fn_ptr(pure))
     }
 
     /// The `CallMath` function id of `Math.<name>`, if it is one of [`Self::PURE`].
     pub(crate) fn pure_id(name: &JsString) -> Option<u8> {
         Self::PURE
             .iter()
-            .position(|&(candidate, _)| name == candidate)
+            .position(|&(candidate, _, _)| name == candidate)
             .and_then(|index| u8::try_from(index).ok())
     }
 
@@ -756,20 +841,8 @@ impl Math {
         for arg in args {
             // a. Let n be ? ToNumber(arg).
             let num = arg.to_number(context)?;
-
-            highest = if highest.is_nan() {
-                continue;
-            } else if num.is_nan() {
-                // a. If number is NaN, return NaN.
-                f64::NAN
-            } else {
-                match (highest, num) {
-                    // b. When x and y are +0𝔽 -0𝔽, return +0𝔽.
-                    (x, y) if x == 0f64 && y == 0f64 && x.signum() != y.signum() => 0f64,
-                    // c. Otherwise, return the maximum value.
-                    (x, y) => x.max(y),
-                }
-            };
+            // a. If number is NaN, return NaN. b. +0 is above -0. c. Otherwise the maximum.
+            highest = Self::max_step(highest, num);
         }
         // 5. Return highest.
         Ok(highest.into())
@@ -794,20 +867,8 @@ impl Math {
         for arg in args {
             // a. Let n be ? ToNumber(arg).
             let num = arg.to_number(context)?;
-
-            lowest = if lowest.is_nan() {
-                continue;
-            } else if num.is_nan() {
-                // a. If number is NaN, return NaN.
-                f64::NAN
-            } else {
-                match (lowest, num) {
-                    // b. When x and y are +0𝔽 -0𝔽, return -0𝔽.
-                    (x, y) if x == 0f64 && y == 0f64 && x.signum() != y.signum() => -0f64,
-                    // c. Otherwise, return the minimum value.
-                    (x, y) => x.min(y),
-                }
-            };
+            // a. If number is NaN, return NaN. b. -0 is below +0. c. Otherwise the minimum.
+            lowest = Self::min_step(lowest, num);
         }
         // 5. Return lowest.
         Ok(lowest.into())

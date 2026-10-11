@@ -798,6 +798,32 @@ impl CallMath {
         let live = usize::from(operands.argc);
         assert!(live <= 3, "CallMath argument count");
 
+        // Pristine `Math` and Number arguments: compute without building a call.
+        if context.vm.get_register(operands.this.into()).is_undefined() {
+            let mut numbers = [0f64; 3];
+            let all_numbers =
+                numbers
+                    .iter_mut()
+                    .zip(operands.args)
+                    .take(live)
+                    .all(|(slot, reg)| {
+                        context
+                            .vm
+                            .get_register(reg.into())
+                            .as_number()
+                            .map(|number| *slot = number)
+                            .is_some()
+                    });
+            if all_numbers
+                && let Some(value) = Math::call_pure_numbers(operands.function, &numbers[..live])
+            {
+                context
+                    .vm
+                    .set_register(operands.dst.into(), JsValue::from(value));
+                return Ok(());
+            }
+        }
+
         let mut stored = [
             JsValue::undefined(),
             JsValue::undefined(),
