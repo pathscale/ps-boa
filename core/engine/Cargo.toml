@@ -208,7 +208,7 @@ textwrap.workspace = true
 test-case.workspace = true
 husky-rs.workspace = true
 
-[dev-dependencies.rusty_alloc-api]
+[dev-dependencies.ps-rusty_alloc]
 workspace = true
 
 [lib]

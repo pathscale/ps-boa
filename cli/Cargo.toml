@@ -30,7 +30,7 @@ smol.workspace = true
 unsend = { workspace = true, features = ["alloc"] }
 async-channel.workspace = true
 rustls.workspace = true
-rusty_alloc-api = { workspace = true, optional = true }
+ps-rusty_alloc = { workspace = true, optional = true }
 
 [features]
 default = [
@@ -43,7 +43,7 @@ default = [
     "fetch",
 ]
 dhat = ["dep:dhat"]
-fast-allocator = ["dep:rusty_alloc-api"]
+fast-allocator = ["dep:ps-rusty_alloc"]
 fetch = ["boa_runtime/fetch", "boa_runtime/reqwest-blocking"]
 
 

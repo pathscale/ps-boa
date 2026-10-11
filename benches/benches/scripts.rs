@@ -6,7 +6,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::{path::Path, time::Duration};
 
 #[global_allocator]
-static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
 fn bench_scripts(c: &mut Criterion) {
     let scripts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");

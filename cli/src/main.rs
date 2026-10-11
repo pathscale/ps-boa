@@ -48,13 +48,13 @@ use std::{
 // ----
 
 #[cfg(all(feature = "fast-allocator", feature = "dhat"))]
-use rusty_alloc_api as _;
+use rusty_alloc as _;
 
 // The pure-Rust allocator on every platform: on the worker replay benchmark it retires 7% fewer
 // instructions than the macOS system allocator, about what mimalloc does, without C code.
 #[cfg(all(feature = "fast-allocator", not(feature = "dhat")))]
 #[global_allocator]
-static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
