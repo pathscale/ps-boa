@@ -108,17 +108,16 @@ impl BuiltInObject for Math {
     const NAME: JsString = StaticJsStrings::MATH;
 }
 
+/// A Math function on Number arguments only, which cannot run user code.
+type NumberFn = fn(&[f64]) -> f64;
+
 impl Math {
     /// The common Math functions that, given only numbers, run no user code and cannot
     /// throw. A `CallMath` function id is an index into this table.
     ///
     /// The third field computes the same result from Number arguments directly, where the
     /// intrinsic is that one f64 operation; `None` sends the call to the intrinsic.
-    const PURE: [(
-        &'static str,
-        NativeFunctionPointer,
-        Option<fn(&[f64]) -> f64>,
-    ); 17] = [
+    const PURE: [(&'static str, NativeFunctionPointer, Option<NumberFn>); 17] = [
         (
             "max",
             Math::max,
