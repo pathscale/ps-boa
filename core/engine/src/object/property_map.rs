@@ -36,10 +36,12 @@ use thin_vec::ThinVec;
 #[derive(Debug, Trace, Finalize)]
 pub enum IndexedProperties {
     /// Dense [`i32`] storage.
-    DenseI32(ThinVec<i32>),
+    // SAFETY: Numeric elements contain no GC pointers and have empty finalizers.
+    DenseI32(#[unsafe_ignore_trace] ThinVec<i32>),
 
     /// Dense [`f64`] storage.
-    DenseF64(ThinVec<f64>),
+    // SAFETY: Numeric elements contain no GC pointers and have empty finalizers.
+    DenseF64(#[unsafe_ignore_trace] ThinVec<f64>),
 
     /// Dense [`JsValue`] storage.
     DenseElement(ThinVec<JsValue>),

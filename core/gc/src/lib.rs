@@ -238,7 +238,8 @@ impl Collector {
 
         let mut tracer = Tracer::new();
 
-        let unreachables = Self::mark_heap(&mut tracer, &gc.strongs, &gc.weaks, &gc.weak_maps);
+        let unreachables =
+            Self::mark_heap::<true>(&mut tracer, &gc.strongs, &gc.weaks, &gc.weak_maps);
 
         assert!(tracer.is_empty(), "The queue should be empty");
 
@@ -249,8 +250,9 @@ impl Collector {
             unsafe { Self::finalize(unreachables) };
 
             // Reuse the tracer's already allocated capacity.
+            // Sweep only needs the marks, so do not record unreachable strong nodes again.
             let _final_unreachables =
-                Self::mark_heap(&mut tracer, &gc.strongs, &gc.weaks, &gc.weak_maps);
+                Self::mark_heap::<false>(&mut tracer, &gc.strongs, &gc.weaks, &gc.weak_maps);
         }
 
         // SAFETY: The head of our linked list is always valid per the invariants of our GC.
@@ -307,7 +309,7 @@ impl Collector {
     }
 
     /// Walk the heap and mark any nodes deemed reachable
-    fn mark_heap(
+    fn mark_heap<const RECORD_STRONG_DEAD: bool>(
         tracer: &mut Tracer,
         strongs: &[GcErasedPointer],
         weaks: &[EphemeronPointer],
@@ -323,14 +325,18 @@ impl Collector {
         for node in strongs {
             // SAFETY: node must be valid as this phase cannot drop any node.
             let node_ref = unsafe { node.as_ref() };
+            // Every root's queue is drained below, so previously marked nodes
+            // have already been traced and need no further root check.
+            if node_ref.is_marked() {
+                continue;
+            }
             if node_ref.is_rooted() {
-                tracer.enqueue(*node);
-
                 // SAFETY: all nodes must be valid as this phase cannot drop any node.
                 unsafe {
+                    tracer.enqueue(*node);
                     tracer.trace_until_empty();
                 }
-            } else if !node_ref.is_marked() {
+            } else if RECORD_STRONG_DEAD {
                 strong_dead.push(*node);
             }
         }

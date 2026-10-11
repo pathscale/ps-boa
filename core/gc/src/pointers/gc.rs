@@ -349,7 +349,8 @@ impl<T: Trace + ?Sized> Finalize for Gc<T> {
 // Trace. It is not possible to root an already rooted `Gc` and vice versa.
 unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
-        tracer.enqueue(self.as_erased_pointer());
+        // SAFETY: Tracing runs during marking, before any allocation is swept.
+        unsafe { tracer.enqueue(self.as_erased_pointer()) };
     }
 
     unsafe fn trace_non_roots(&self) {
