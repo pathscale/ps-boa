@@ -63,6 +63,19 @@ pub struct JsObject<T: NativeObject = ErasedObjectData> {
     inner: Gc<VTableObject<T>>,
 }
 
+impl<T: NativeObject> JsObject<T> {
+    /// See [`Gc::release_outside_collection`].
+    ///
+    /// # Safety
+    ///
+    /// The caller is not running inside a garbage collection sweep on this thread.
+    #[inline]
+    pub(crate) unsafe fn release_outside_collection(self) {
+        // SAFETY: forwarded from the caller.
+        unsafe { Gc::release_outside_collection(self.inner) };
+    }
+}
+
 impl<T: NativeObject> Clone for JsObject<T> {
     fn clone(&self) -> Self {
         Self {

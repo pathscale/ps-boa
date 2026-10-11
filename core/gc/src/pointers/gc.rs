@@ -317,6 +317,24 @@ impl<T: Trace + ?Sized> Gc<T> {
     }
 }
 
+impl<T: Trace + ?Sized> Gc<T> {
+    /// Drops `this` without asking whether a collection is sweeping.
+    ///
+    /// [`Drop`] reads a thread-local flag on every drop because a value freed by the sweep
+    /// may hold pointers into boxes the sweep already freed. Code that cannot run inside a
+    /// sweep, such as the interpreter releasing a frame, can skip that read.
+    ///
+    /// # Safety
+    ///
+    /// The caller is not running inside a garbage collection sweep on this thread.
+    #[inline]
+    pub unsafe fn release_outside_collection(this: Self) {
+        let this = std::mem::ManuallyDrop::new(this);
+        // SAFETY: outside a sweep the box is alive while this pointer holds its reference.
+        unsafe { this.inner_ptr.as_ref().dec_ref_count() };
+    }
+}
+
 impl<T: Trace + ?Sized> Finalize for Gc<T> {
     fn finalize(&self) {
         // SAFETY: inner_ptr should be alive when calling finalize.
