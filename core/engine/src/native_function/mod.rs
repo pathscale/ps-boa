@@ -390,7 +390,10 @@ pub(crate) fn native_function_call(
     context.vm.native_active_function = Some(this_function_object);
 
     let result = if constructor.is_some() {
-        function.call(&JsValue::undefined(), args, context)
+        let outer = context.vm.native_constructor_receiver.replace(this);
+        let result = function.call(&JsValue::undefined(), args, context);
+        context.vm.native_constructor_receiver = outer;
+        result
     } else {
         function.call(&this, args, context)
     }

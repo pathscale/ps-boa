@@ -870,6 +870,16 @@ impl Context {
             .find_map(|frame| frame.active_runnable.clone())
     }
 
+    /// The receiver of the native constructor running as a plain call (its first argument,
+    /// new.target, is then `undefined`). `None` outside such a call.
+    ///
+    /// For an embedder whose constructor accepts the ES5 subclass pattern
+    /// `Base.call(this)`, which a native constructor cannot otherwise see.
+    #[must_use]
+    pub fn native_constructor_receiver(&self) -> Option<&JsValue> {
+        self.vm.native_constructor_receiver.as_ref()
+    }
+
     /// Get `active function object`
     ///
     /// More information:

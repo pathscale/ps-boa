@@ -94,6 +94,10 @@ pub struct Vm {
     /// because we don't push a frame for them.
     pub(crate) native_active_function: Option<JsObject>,
 
+    /// The receiver of a native constructor invoked with [[Call]]. Such a function gets
+    /// `undefined` as its first argument (its new.target), so the receiver is kept here.
+    pub(crate) native_constructor_receiver: Option<JsValue>,
+
     /// Number of nested host calls that re-enter the VM via `Context::run()`.
     ///
     /// This is incremented by high-level host entry points such as
@@ -469,6 +473,7 @@ impl Vm {
             runtime_limits: RuntimeLimits::default(),
             interrupt_flag: None,
             native_active_function: None,
+            native_constructor_receiver: None,
             host_call_depth: 0,
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
