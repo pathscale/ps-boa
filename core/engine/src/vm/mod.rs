@@ -47,6 +47,8 @@ mod call_frame;
 mod code_block;
 mod completion_record;
 mod inline_cache;
+#[cfg(feature = "jit")]
+pub(crate) mod jit;
 mod runtime_limits;
 
 #[cfg(debug_assertions)]
@@ -244,6 +246,37 @@ impl Stack {
     ) {
         let index = self.stack.len() - argument_count;
         out.extend(self.stack.drain(index..));
+    }
+
+    /// Copies the last `argument_count` values, the call's arguments, into `out` when every one
+    /// is a Number. Leaves the stack unchanged either way.
+    #[cfg(feature = "jit")]
+    pub(crate) fn calling_convention_numbers(
+        &self,
+        argument_count: usize,
+        out: &mut [f64],
+    ) -> bool {
+        let start = self.stack.len() - argument_count;
+        for (slot, value) in out.iter_mut().zip(&self.stack[start..]) {
+            let Some(number) = value.as_number() else {
+                return false;
+            };
+            *slot = number;
+        }
+        true
+    }
+
+    /// Replaces a call's `this`, function and `argument_count` arguments with its result,
+    /// the stack shape a completed call leaves.
+    #[cfg(feature = "jit")]
+    pub(crate) fn calling_convention_replace_call(
+        &mut self,
+        argument_count: usize,
+        result: JsValue,
+    ) {
+        let len = self.stack.len() - argument_count - 2;
+        self.stack.truncate(len);
+        self.stack.push(result);
     }
 
     /// Push the function arguments according to the calling convention.
