@@ -35,7 +35,10 @@ const SERVICES: &[(&str, &[DataMarkerInfo])] = &[
     ("icu_list", icu_list::provider::MARKERS),
     ("icu_locale", icu_locale::provider::MARKERS),
     // ICU4X 2.3 moved language likely subtags and parents into the fallback component.
-    ("icu_locale_fallback", icu_locale_fallback::provider::MARKERS),
+    (
+        "icu_locale_fallback",
+        icu_locale_fallback::provider::MARKERS,
+    ),
     ("icu_normalizer", icu_normalizer::provider::MARKERS),
     ("icu_plurals", icu_plurals::provider::MARKERS),
     ("icu_segmenter", icu_segmenter::provider::MARKERS),
