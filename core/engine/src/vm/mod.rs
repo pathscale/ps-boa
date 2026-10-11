@@ -49,6 +49,9 @@ mod completion_record;
 mod inline_cache;
 mod runtime_limits;
 
+#[cfg(debug_assertions)]
+pub(crate) mod verify;
+
 pub(crate) mod opcode;
 pub(crate) mod shadow_stack;
 pub(crate) mod source_info;
