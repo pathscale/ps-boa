@@ -831,6 +831,24 @@ impl NanBoxedValue {
     }
 }
 
+impl NanBoxedValue {
+    /// Drops the value; an object drops without the collection check.
+    ///
+    /// # Safety
+    ///
+    /// The caller is not running inside a garbage collection sweep on this thread.
+    #[inline(always)]
+    pub(crate) unsafe fn release_outside_collection(self) {
+        if self.value() & bits::MASK_KIND == bits::MASK_OBJECT {
+            let this = ManuallyDrop::new(self);
+            // SAFETY: the kind is object, and `this` gives its reference to the release.
+            unsafe {
+                ManuallyDrop::into_inner(this.as_object_unchecked()).release_outside_collection();
+            };
+        }
+    }
+}
+
 impl Drop for NanBoxedValue {
     #[inline(always)]
     fn drop(&mut self) {

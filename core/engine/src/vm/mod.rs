@@ -156,7 +156,10 @@ impl Stack {
 
     /// Truncate the stack to the given frame.
     pub(crate) fn truncate_to_frame(&mut self, frame: &CallFrame) {
-        self.stack.truncate(frame.frame_pointer());
+        for value in self.stack.drain(frame.frame_pointer()..) {
+            // SAFETY: the interpreter never runs inside a collection sweep.
+            unsafe { value.release_outside_collection() };
+        }
     }
 
     /// Split the stack at the given frame.

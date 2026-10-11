@@ -40,6 +40,16 @@ unsafe impl Trace for EnumBasedValue {
 }
 
 impl EnumBasedValue {
+    /// Drops the value. This representation has no unchecked path.
+    ///
+    /// # Safety
+    ///
+    /// Always safe; `unsafe` matches the NaN-boxed representation.
+    #[inline]
+    pub(crate) unsafe fn release_outside_collection(self) {
+        drop(self);
+    }
+
     /// Returns a `InnerValue` from a Null.
     #[must_use]
     #[inline]

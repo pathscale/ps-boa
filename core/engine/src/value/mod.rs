@@ -117,6 +117,24 @@ pub use boa_macros::js_value;
 #[derive(Finalize, Debug, Clone, Trace)]
 pub struct JsValue(inner::InnerValue);
 
+impl JsValue {
+    /// Drops the value without the per-object collection check (see
+    /// [`boa_gc::Gc::release_outside_collection`]).
+    ///
+    /// # Safety
+    ///
+    /// The caller is not running inside a garbage collection sweep on this thread.
+    #[inline]
+    pub(crate) unsafe fn release_outside_collection(self) {
+        // SAFETY: forwarded from the caller.
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is never dropped, so the inner value is read out exactly once.
+        let inner = unsafe { std::ptr::read(&raw const this.0) };
+        // SAFETY: forwarded from the caller.
+        unsafe { inner.release_outside_collection() };
+    }
+}
+
 /// A [`JsObject`] borrowed from a [`JsValue`], sharing its reference instead of taking a new one.
 pub(crate) struct JsObjectRef<'a>(
     std::mem::ManuallyDrop<JsObject>,
