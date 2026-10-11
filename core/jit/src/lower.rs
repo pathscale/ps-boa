@@ -5,7 +5,7 @@
 //! A `SetAccumulator` of a boolean rejects the function: the return would be a
 //! number, not a boolean.
 
-use crate::ir::{BinOp, CmpOp, Insn, Op, Rel, Unary, When, validate};
+use crate::ir::{BinOp, CmpOp, Insn, MathFn, Op, Rel, Unary, When, validate};
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::immediates::Ieee64;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, Type, Value, types};
@@ -239,14 +239,52 @@ impl Cx<'_, '_, '_> {
                 let value = self.use_reg(src);
                 self.builder.def_var(self.acc, value);
             }
+            Op::Math { f, dst, args, argc } => {
+                let _ = apply(state, op);
+                let value = self.math_value(f, &args[..usize::from(argc)]);
+                self.def_reg(dst, value);
+            }
             Op::Jump { .. }
             | Op::JumpIf { .. }
             | Op::JumpRel { .. }
             | Op::JumpNe { .. }
             | Op::CheckReturn
             | Op::Return
-            | Op::LoopIter => {
+            | Op::LoopIter
+            | Op::Nop => {
                 let _ = apply(state, op);
+            }
+        }
+    }
+
+    /// A boolean argument is 0.0 or 1.0, which is already its `ToNumber`.
+    fn math_value(&mut self, f: MathFn, regs: &[u32]) -> Value {
+        let args: Vec<Value> = regs.iter().map(|&reg| self.use_reg(reg)).collect();
+        let unary = |cx: &mut Self, op: fn(&mut Self, Value) -> Value| match args.first() {
+            Some(&value) => op(cx, value),
+            None => cx.fconst(f64::NAN),
+        };
+        match f {
+            MathFn::Floor => unary(self, |cx, v| cx.builder.ins().floor(v)),
+            MathFn::Ceil => unary(self, |cx, v| cx.builder.ins().ceil(v)),
+            MathFn::Trunc => unary(self, |cx, v| cx.builder.ins().trunc(v)),
+            MathFn::Sqrt => unary(self, |cx, v| cx.builder.ins().sqrt(v)),
+            MathFn::Abs => unary(self, |cx, v| cx.builder.ins().fabs(v)),
+            MathFn::Max | MathFn::Min => {
+                let max = matches!(f, MathFn::Max);
+                let mut result = self.fconst(if max {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                });
+                for &value in &args {
+                    result = if max {
+                        self.builder.ins().fmax(result, value)
+                    } else {
+                        self.builder.ins().fmin(result, value)
+                    };
+                }
+                result
             }
         }
     }
@@ -711,7 +749,18 @@ fn apply(state: &mut State, op: &Op) -> bool {
                 return false;
             }
         }
-        Op::Jump { .. } | Op::CheckReturn | Op::LoopIter => {}
+        Op::Math {
+            dst, args, argc, ..
+        } => {
+            if !args[..usize::from(argc)]
+                .iter()
+                .all(|&arg| defined(state, arg))
+            {
+                return false;
+            }
+            set_kind(state, dst, Kind::Num);
+        }
+        Op::Jump { .. } | Op::CheckReturn | Op::LoopIter | Op::Nop => {}
     }
     true
 }

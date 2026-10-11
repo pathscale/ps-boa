@@ -89,6 +89,26 @@ pub enum Unary {
     Neg,
 }
 
+/// A pure `Math` function computed inline. Each is exact IEEE arithmetic, so the result is
+/// the one the interpreter's intrinsic returns.
+#[derive(Debug, Clone, Copy)]
+pub enum MathFn {
+    /// `Math.floor`.
+    Floor,
+    /// `Math.ceil`.
+    Ceil,
+    /// `Math.trunc`.
+    Trunc,
+    /// `Math.sqrt`.
+    Sqrt,
+    /// `Math.abs`.
+    Abs,
+    /// `Math.max`: `NaN` if any argument is, and +0 over -0.
+    Max,
+    /// `Math.min`: `NaN` if any argument is, and -0 over +0.
+    Min,
+}
+
 /// One instruction. Register operands are engine register indices.
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
@@ -190,6 +210,20 @@ pub enum Op {
         /// Right operand register.
         rhs: u32,
     },
+    /// `dst = Math.f(args[..argc])`. Valid only while the realm's `Math` is untouched,
+    /// which the engine checks before running the code.
+    Math {
+        /// The function.
+        f: MathFn,
+        /// Destination register.
+        dst: u32,
+        /// Argument registers; the first `argc` are live.
+        args: [u32; 3],
+        /// Argument count, at most 3.
+        argc: u8,
+    },
+    /// No effect.
+    Nop,
     /// `accumulator = src`.
     SetAcc {
         /// Source register.
@@ -259,7 +293,10 @@ pub(crate) fn validate(insns: &[Insn], register_count: u32, parameter_count: u32
             Op::JumpIf { value, .. } => reg(value),
             Op::JumpRel { lhs, rhs, .. } | Op::JumpNe { lhs, rhs, .. } => reg(lhs) && reg(rhs),
             Op::SetAcc { src } => reg(src),
-            Op::Jump { .. } | Op::CheckReturn | Op::Return | Op::LoopIter => true,
+            Op::Math {
+                dst, args, argc, ..
+            } => argc <= 3 && reg(dst) && args[..usize::from(argc)].iter().all(|&a| reg(a)),
+            Op::Jump { .. } | Op::CheckReturn | Op::Return | Op::LoopIter | Op::Nop => true,
         };
         registers
             && insn
