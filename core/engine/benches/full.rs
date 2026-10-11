@@ -9,12 +9,8 @@ use boa_engine::{
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
-#[cfg_attr(
-    all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"),
-    global_allocator
-)]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+#[global_allocator]
+static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
 
 fn create_realm(c: &mut Criterion) {
     c.bench_function("Create Realm", move |b| {

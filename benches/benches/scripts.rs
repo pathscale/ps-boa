@@ -5,9 +5,8 @@ use boa_engine::{
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::{path::Path, time::Duration};
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 #[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
 
 fn bench_scripts(c: &mut Criterion) {
     let scripts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
