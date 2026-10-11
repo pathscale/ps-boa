@@ -31,8 +31,11 @@ pub fn set_helpers(helpers: baseline::Helpers) {
 /// Lower a function body to baseline code. Returns `None` when the helpers are not
 /// registered, a jump target is not an instruction, or the host cannot emit code.
 #[must_use]
-pub fn compile_baseline(insns: &[baseline::Insn]) -> Option<baseline::BaselineFn> {
-    if !baseline::validate(insns) {
+pub fn compile_baseline(
+    insns: &[baseline::Insn],
+    register_count: u32,
+) -> Option<baseline::BaselineFn> {
+    if !baseline::validate(insns, register_count) {
         return None;
     }
     with_jit(|state| state.compile_baseline(insns)).flatten()
@@ -198,6 +201,7 @@ impl JitState {
         let mut signature = self.module.make_signature();
         signature.params.push(AbiParam::new(self.pointer_type));
         signature.params.push(AbiParam::new(types::I32));
+        signature.params.push(AbiParam::new(self.pointer_type));
         signature.returns.push(AbiParam::new(types::I32));
         let name = format!("boa_jit_{}", self.next_id);
         self.next_id = self.next_id.wrapping_add(1);

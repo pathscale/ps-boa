@@ -153,6 +153,17 @@ impl std::ops::Deref for JsObjectRef<'_> {
 impl JsValue {
     /// Create a new [`JsValue`] from an inner value.
     #[inline]
+    /// The NaN-boxed bits of this value.
+    #[cfg(all(
+        feature = "jit",
+        not(feature = "jsvalue-enum"),
+        target_pointer_width = "64"
+    ))]
+    #[must_use]
+    pub(crate) fn jit_bits(&self) -> u64 {
+        self.0.bits()
+    }
+
     const fn from_inner(inner: inner::InnerValue) -> Self {
         Self(inner)
     }

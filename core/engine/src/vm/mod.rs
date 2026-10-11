@@ -118,6 +118,10 @@ pub struct Vm {
     #[cfg(feature = "jit")]
     pub(crate) jit_break: Option<CompletionRecord>,
 
+    /// The running baseline frame's registers, which its code reads after each helper.
+    #[cfg(feature = "jit")]
+    pub(crate) jit_frame: boa_jit::baseline::JitFrame,
+
     #[cfg(feature = "trace")]
     pub(crate) trace: bool,
     #[cfg(feature = "trace")]
@@ -524,6 +528,11 @@ impl Vm {
             jit_depth: 0,
             #[cfg(feature = "jit")]
             jit_break: None,
+            #[cfg(feature = "jit")]
+            jit_frame: boa_jit::baseline::JitFrame {
+                regs: std::ptr::null_mut(),
+                argc: 0,
+            },
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
             trace: false,

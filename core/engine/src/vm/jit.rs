@@ -91,8 +91,8 @@ pub(crate) fn try_call(
             boa_jit::set_helpers(HELPERS);
             let Some((insns, uses_math)) = translate(code) else {
                 if baseline_enabled()
-                    && let Some(compiled) =
-                        translate_baseline(code).and_then(|insns| boa_jit::compile_baseline(&insns))
+                    && let Some(compiled) = translate_baseline(code)
+                        .and_then(|insns| boa_jit::compile_baseline(&insns, code.register_count))
                 {
                     code.jit.state.set(JitState::Baseline(compiled));
                 }
@@ -326,9 +326,11 @@ pub(crate) fn run_frame(context: &mut Context) -> ControlFlow<CompletionRecord> 
         return ControlFlow::Continue(());
     };
     context.vm.jit_depth += 1;
+    refresh_frame(context);
+    let frame = std::ptr::from_ref(&context.vm.jit_frame);
     // SAFETY: `compiled` was emitted on this thread for the top frame's code block, whose
     // bytecode it addresses. It only passes `context` back to the helpers below.
-    let result = unsafe { compiled(std::ptr::from_mut(context).cast(), depth) };
+    let result = unsafe { compiled(std::ptr::from_mut(context).cast(), depth, frame) };
     context.vm.jit_depth -= 1;
     if result == status::BREAK
         && let Some(record) = context.vm.jit_break.take()
@@ -336,6 +338,20 @@ pub(crate) fn run_frame(context: &mut Context) -> ControlFlow<CompletionRecord> 
         return ControlFlow::Break(record);
     }
     ControlFlow::Continue(())
+}
+
+/// Points [`Vm::jit_frame`](crate::vm::Vm) at the top frame's registers.
+fn refresh_frame(context: &mut Context) {
+    let frame = context.vm.frame();
+    let (rp, argc) = (frame.rp as usize, frame.argument_count);
+    let regs = context
+        .vm
+        .stack
+        .stack
+        .as_mut_ptr()
+        .wrapping_add(rp)
+        .cast::<u64>();
+    context.vm.jit_frame = baseline::JitFrame { regs, argc };
 }
 
 /// Runs the handler for the instruction at `pc`, as the run loop would.
@@ -385,6 +401,7 @@ fn settle(
     if context.vm.frames.len() != depth {
         return status::EXIT;
     }
+    refresh_frame(context);
     let pc = context.vm.frame().pc;
     if pc == next {
         status::NEXT
@@ -427,6 +444,14 @@ fn translate_baseline(code: &CodeBlock) -> Option<Vec<baseline::Insn>> {
         return None;
     }
     let bytes = &code.bytecode.bytes;
+    // A rest parameter moves the arguments, so `GetArgument` runs through its handler.
+    let mut rest = false;
+    let mut pc = 0;
+    while pc < bytes.len() {
+        let (instruction, next) = code.bytecode.next_instruction(pc);
+        rest |= matches!(instruction, Instruction::RestParameterInit { .. });
+        pc = next;
+    }
     let mut insns = Vec::new();
     let mut pc = 0;
     while pc < bytes.len() {
@@ -438,6 +463,11 @@ fn translate_baseline(code: &CodeBlock) -> Option<Vec<baseline::Insn>> {
             next: after,
             target,
         };
+        if let Some(insn) = fast(&instruction, at, after, rest) {
+            insns.push(insn);
+            pc = next;
+            continue;
+        }
         insns.push(match instruction {
             Instruction::Jump { address } => baseline::Insn::Jump {
                 pc: at,
@@ -465,6 +495,98 @@ fn translate_baseline(code: &CodeBlock) -> Option<Vec<baseline::Insn>> {
         pc = next;
     }
     Some(insns)
+}
+
+/// The inline form of `instruction`, when it has one. Inline paths read NaN-boxed
+/// registers, so the enum value representation has none.
+#[cfg(all(not(feature = "jsvalue-enum"), target_pointer_width = "64"))]
+fn fast(instruction: &Instruction, pc: u32, next: u32, rest: bool) -> Option<baseline::Insn> {
+    use baseline::{Arith, FastCond, FastOp, Insn, Rel};
+    let r = |operand| u32::from(operand);
+    let constant = |dst, value: JsValue| FastOp::Const {
+        dst: r(dst),
+        bits: value.jit_bits(),
+    };
+    let arith = |op, dst, lhs, rhs| FastOp::Arith {
+        op,
+        dst: r(dst),
+        lhs: r(lhs),
+        rhs: r(rhs),
+    };
+    let unless = |rel, address, lhs, rhs| Insn::FastBranch {
+        pc,
+        next,
+        target: u32::from(address),
+        cond: FastCond::JumpUnless {
+            rel,
+            lhs: r(lhs),
+            rhs: r(rhs),
+        },
+    };
+    let jump_if = |when_true, address, value| Insn::FastBranch {
+        pc,
+        next,
+        target: u32::from(address),
+        cond: FastCond::JumpIf {
+            when_true,
+            value: r(value),
+        },
+    };
+    let op = match *instruction {
+        Instruction::Move { dst, src } => FastOp::Move {
+            dst: r(dst),
+            src: r(src),
+        },
+        Instruction::StoreZero { dst } => constant(dst, JsValue::from(0)),
+        Instruction::StoreOne { dst } => constant(dst, JsValue::from(1)),
+        Instruction::StoreInt8 { dst, value } => constant(dst, JsValue::from(i32::from(value))),
+        Instruction::StoreInt16 { dst, value } => constant(dst, JsValue::from(i32::from(value))),
+        Instruction::StoreInt32 { dst, value } => constant(dst, JsValue::from(value)),
+        Instruction::StoreFloat { dst, value } => constant(dst, JsValue::from(value)),
+        Instruction::StoreDouble { dst, value } => constant(dst, JsValue::from(value)),
+        Instruction::StoreNan { dst } => constant(dst, JsValue::nan()),
+        Instruction::StorePositiveInfinity { dst } => constant(dst, JsValue::positive_infinity()),
+        Instruction::StoreNegativeInfinity { dst } => constant(dst, JsValue::negative_infinity()),
+        Instruction::Add { dst, lhs, rhs } => arith(Arith::Add, dst, lhs, rhs),
+        Instruction::Sub { dst, lhs, rhs } => arith(Arith::Sub, dst, lhs, rhs),
+        Instruction::Mul { dst, lhs, rhs } => arith(Arith::Mul, dst, lhs, rhs),
+        Instruction::Div { dst, lhs, rhs } => arith(Arith::Div, dst, lhs, rhs),
+        Instruction::Inc { dst, src } => FastOp::Inc {
+            dst: r(dst),
+            src: r(src),
+            dec: false,
+        },
+        Instruction::Dec { dst, src } => FastOp::Inc {
+            dst: r(dst),
+            src: r(src),
+            dec: true,
+        },
+        Instruction::GetArgument { index, dst } if !rest => FastOp::GetArg {
+            index: u32::from(index),
+            dst: r(dst),
+        },
+        Instruction::JumpIfNotLessThan { address, lhs, rhs } => {
+            return Some(unless(Rel::Lt, address, lhs, rhs));
+        }
+        Instruction::JumpIfNotLessThanOrEqual { address, lhs, rhs } => {
+            return Some(unless(Rel::Le, address, lhs, rhs));
+        }
+        Instruction::JumpIfNotGreaterThan { address, lhs, rhs } => {
+            return Some(unless(Rel::Gt, address, lhs, rhs));
+        }
+        Instruction::JumpIfNotGreaterThanOrEqual { address, lhs, rhs } => {
+            return Some(unless(Rel::Ge, address, lhs, rhs));
+        }
+        Instruction::JumpIfTrue { address, value } => return Some(jump_if(true, address, value)),
+        Instruction::JumpIfFalse { address, value } => return Some(jump_if(false, address, value)),
+        _ => return None,
+    };
+    Some(Insn::Fast { pc, next, op })
+}
+
+#[cfg(not(all(not(feature = "jsvalue-enum"), target_pointer_width = "64")))]
+fn fast(_: &Instruction, _: u32, _: u32, _: bool) -> Option<baseline::Insn> {
+    None
 }
 
 /// Baseline code is on unless `BOA_JIT_BASELINE=0` is set.
