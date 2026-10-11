@@ -29,6 +29,8 @@ use crate::{
     },
 };
 
+mod typed;
+
 /// The `pc` of a frame whose baseline code has not started. No bytecode is this long.
 pub(crate) const ENTRY: u32 = u32::MAX;
 
@@ -38,6 +40,7 @@ const DEPTH_LIMIT: u32 = 200;
 const HELPERS: baseline::Helpers = baseline::Helpers {
     step: step_helper,
     branch: branch_helper,
+    calls: typed::HELPERS,
 };
 
 /// Calls before a function is compiled.
@@ -332,37 +335,66 @@ pub(crate) fn run_frame(context: &mut Context) -> ControlFlow<CompletionRecord> 
     // bytecode it addresses. It only passes `context` back to the helpers below.
     let result = unsafe { compiled(std::ptr::from_mut(context).cast(), depth, frame) };
     context.vm.jit_depth -= 1;
-    if result == status::BREAK
-        && let Some(record) = context.vm.jit_break.take()
-    {
-        return ControlFlow::Break(record);
+    if result == status::BREAK {
+        return take_break(context);
     }
     ControlFlow::Continue(())
+}
+
+#[cold]
+fn take_break(context: &mut Context) -> ControlFlow<CompletionRecord> {
+    match context.vm.jit_break.take() {
+        Some(record) => ControlFlow::Break(record),
+        None => ControlFlow::Continue(()),
+    }
 }
 
 /// Points [`Vm::jit_frame`](crate::vm::Vm) at the top frame's registers.
 fn refresh_frame(context: &mut Context) {
     let frame = context.vm.frame();
     let (rp, argc) = (frame.rp as usize, frame.argument_count);
-    let regs = context
-        .vm
-        .stack
-        .stack
-        .as_mut_ptr()
-        .wrapping_add(rp)
-        .cast::<u64>();
-    context.vm.jit_frame = baseline::JitFrame { regs, argc };
+    let stack = context.vm.stack.stack.as_mut_ptr();
+    context.vm.jit_frame = baseline::JitFrame {
+        regs: stack.wrapping_add(rp).cast::<u64>(),
+        argc,
+        stack: stack.cast::<u64>(),
+        depth: context.vm.frames.len(),
+    };
 }
 
-/// Runs the handler for the instruction at `pc`, as the run loop would.
-fn run_instruction(context: &mut Context, pc: u32) -> ControlFlow<CompletionRecord> {
-    if context
+#[inline]
+fn interrupt_pending(context: &Context) -> bool {
+    context
         .vm
         .interrupt_flag
         .as_ref()
         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
-    {
-        return context.handle_error(RuntimeLimitError::Interrupted.into());
+}
+
+#[cold]
+fn interrupted(context: &mut Context, next: u32, target: u32, depth: u32) -> u32 {
+    let flow = context.handle_error(RuntimeLimitError::Interrupted.into());
+    if flow.is_break() {
+        return save_break(context, flow);
+    }
+    settle(context, next, target, depth)
+}
+
+/// Only the cold path transfers ownership of a completion record.
+#[cold]
+fn save_break(context: &mut Context, flow: ControlFlow<CompletionRecord>) -> u32 {
+    let ControlFlow::Break(record) = flow else {
+        unreachable!("only a break completion is saved");
+    };
+    context.vm.jit_break = Some(record);
+    status::BREAK
+}
+
+/// Runs the handler for the instruction at `pc`, as the run loop would.
+#[inline]
+fn run_step(context: &mut Context, pc: u32, next: u32, target: u32, depth: u32) -> u32 {
+    if interrupt_pending(context) {
+        return interrupted(context, next, target, depth);
     }
     let Some(&byte) = context
         .vm
@@ -372,37 +404,36 @@ fn run_instruction(context: &mut Context, pc: u32) -> ControlFlow<CompletionReco
         .bytes
         .get(pc as usize)
     else {
-        return ControlFlow::Continue(());
+        return settle(context, next, target, depth);
     };
-    OPCODE_HANDLERS[Opcode::decode(byte) as usize](context, pc as usize)
+    let flow = OPCODE_HANDLERS[Opcode::decode(byte) as usize](context, pc as usize);
+    if flow.is_break() {
+        return save_break(context, flow);
+    }
+    settle(context, next, target, depth)
 }
 
-/// Where the frame went after an instruction, as a [`status`] value. A frame the
-/// instruction pushed is run to completion here first, so the code continues after a call.
-fn settle(
-    context: &mut Context,
-    flow: ControlFlow<CompletionRecord>,
-    next: u32,
-    target: u32,
-    depth: u32,
-) -> u32 {
-    let mut flow = flow;
-    let depth = depth as usize;
-    if flow.is_continue() && context.vm.frames.len() > depth {
-        if context.vm.jit_depth >= DEPTH_LIMIT {
-            return status::EXIT;
-        }
-        flow = context.run_nested(depth);
+/// Where the frame went after a continuing instruction, as a [`status`] value.
+#[inline]
+fn settle(context: &mut Context, next: u32, target: u32, depth: u32) -> u32 {
+    let count = context.vm.frames.len();
+    if count != depth as usize {
+        return settle_frames(context, next, target, depth);
     }
-    if let ControlFlow::Break(record) = flow {
-        context.vm.jit_break = Some(record);
-        return status::BREAK;
+
+    // Read the top frame once. Nested baseline activations overwrite the shared
+    // register view, so its cached depth must be checked even if the stack did not move.
+    let frame = context.vm.frames.last().expect("a baseline frame is live");
+    let pc = frame.pc;
+    let stack = context.vm.stack.stack.as_mut_ptr();
+    if context.vm.jit_frame.stack != stack.cast::<u64>() || context.vm.jit_frame.depth != count {
+        context.vm.jit_frame = baseline::JitFrame {
+            regs: stack.wrapping_add(frame.rp as usize).cast::<u64>(),
+            argc: frame.argument_count,
+            stack: stack.cast::<u64>(),
+            depth: count,
+        };
     }
-    if context.vm.frames.len() != depth {
-        return status::EXIT;
-    }
-    refresh_frame(context);
-    let pc = context.vm.frame().pc;
     if pc == next {
         status::NEXT
     } else if pc == target {
@@ -410,6 +441,24 @@ fn settle(
     } else {
         status::EXIT
     }
+}
+
+/// A frame the instruction pushed is run to completion before resuming its caller.
+#[cold]
+fn settle_frames(context: &mut Context, next: u32, target: u32, depth: u32) -> u32 {
+    if context.vm.frames.len() > depth as usize {
+        if context.vm.jit_depth >= DEPTH_LIMIT {
+            return status::EXIT;
+        }
+        let flow = context.run_nested(depth as usize);
+        if flow.is_break() {
+            return save_break(context, flow);
+        }
+    }
+    if context.vm.frames.len() != depth as usize {
+        return status::EXIT;
+    }
+    settle(context, next, target, depth)
 }
 
 unsafe extern "C" fn step_helper(
@@ -421,8 +470,7 @@ unsafe extern "C" fn step_helper(
     // SAFETY: baseline code passes back the context `run_frame` gave it, which is live and
     // not otherwise borrowed while the code runs.
     let context = unsafe { &mut *context.cast::<Context>() };
-    let flow = run_instruction(context, pc);
-    settle(context, flow, next, ENTRY, depth)
+    run_step(context, pc, next, ENTRY, depth)
 }
 
 unsafe extern "C" fn branch_helper(
@@ -434,8 +482,7 @@ unsafe extern "C" fn branch_helper(
 ) -> u32 {
     // SAFETY: as in `step_helper`.
     let context = unsafe { &mut *context.cast::<Context>() };
-    let flow = run_instruction(context, pc);
-    settle(context, flow, next, target, depth)
+    run_step(context, pc, next, target, depth)
 }
 
 /// Baseline instructions for `code`, or `None` when it is not an ordinary function.
@@ -463,7 +510,9 @@ fn translate_baseline(code: &CodeBlock) -> Option<Vec<baseline::Insn>> {
             next: after,
             target,
         };
-        if let Some(insn) = fast(&instruction, at, after, rest) {
+        if let Some(insn) = fast(&instruction, at, after, rest)
+            .or_else(|| typed::translate(&instruction, at, after))
+        {
             insns.push(insn);
             pc = next;
             continue;

@@ -67,13 +67,20 @@ enum Cache {
     Ready(Box<JitState>),
 }
 
+#[derive(Clone, Copy)]
+struct BaselineHelpers {
+    step: FuncId,
+    branch: FuncId,
+    calls: [FuncId; baseline::HelperKind::COUNT],
+}
+
 struct JitState {
     module: JITModule,
     ctx: Context,
     builder_ctx: FunctionBuilderContext,
     rem: FuncId,
     to_int32: FuncId,
-    helpers: Option<(FuncId, FuncId)>,
+    helpers: Option<BaselineHelpers>,
     next_id: u32,
     pointer_type: cranelift_codegen::ir::Type,
 }
@@ -121,6 +128,9 @@ impl JitState {
         if let Some(helpers) = registered {
             jit_builder.symbol("boa_jit_step", helpers.step as *const u8);
             jit_builder.symbol("boa_jit_branch", helpers.branch as *const u8);
+            for helper in baseline::HelperKind::ALL {
+                jit_builder.symbol(helper.symbol(), helpers.calls[helper.index()] as *const u8);
+            }
         }
         let mut module = JITModule::new(jit_builder);
         let pointer_type = module.target_config().pointer_type();
@@ -141,7 +151,18 @@ impl JitState {
                 let step = declare_import(&mut module, "boa_jit_step", &step_params, types::I32)?;
                 let branch =
                     declare_import(&mut module, "boa_jit_branch", &branch_params, types::I32)?;
-                Some((step, branch))
+                let mut call_params = vec![pointer_type];
+                call_params.extend(i32s(6));
+                let mut calls = [step; baseline::HelperKind::COUNT];
+                for helper in baseline::HelperKind::ALL {
+                    calls[helper.index()] =
+                        declare_import(&mut module, helper.symbol(), &call_params, types::I32)?;
+                }
+                Some(BaselineHelpers {
+                    step,
+                    branch,
+                    calls,
+                })
             }
             None => None,
         };
@@ -197,7 +218,7 @@ impl JitState {
 
 impl JitState {
     fn compile_baseline(&mut self, insns: &[baseline::Insn]) -> Option<baseline::BaselineFn> {
-        let (step, branch) = self.helpers?;
+        let helpers = self.helpers?;
         let mut signature = self.module.make_signature();
         signature.params.push(AbiParam::new(self.pointer_type));
         signature.params.push(AbiParam::new(types::I32));
@@ -214,7 +235,14 @@ impl JitState {
         {
             let mut builder =
                 cranelift_frontend::FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
-            baseline::emit(&mut builder, &mut self.module, step, branch, insns);
+            baseline::emit(
+                &mut builder,
+                &mut self.module,
+                helpers.step,
+                helpers.branch,
+                helpers.calls,
+                insns,
+            );
             builder.seal_all_blocks();
             builder.finalize(self.module.target_config());
         }

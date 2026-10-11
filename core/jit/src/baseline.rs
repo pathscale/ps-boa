@@ -25,9 +25,9 @@ pub mod status {
     pub const BREAK: u32 = 3;
 }
 
-/// Where the running function's registers are. The engine rewrites it before the code
-/// starts and before every helper returns [`status::NEXT`] or [`status::TAKEN`], since a
-/// helper can move the stack; the code reloads it after each helper call.
+/// Where the running function's registers are. The engine initializes it on entry and
+/// refreshes it after a helper when the stack buffer or cached frame count changed.
+/// The code reloads the register view after each helper call.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct JitFrame {
@@ -35,6 +35,10 @@ pub struct JitFrame {
     pub regs: *mut u64,
     /// The call's argument count. Argument `i` is at `regs[i - argc]` when `i < argc`.
     pub argc: u32,
+    /// Stack buffer used to form `regs`, compared by the engine without dereferencing it.
+    pub stack: *mut u64,
+    /// Frame count when this view was refreshed, including nested baseline entries.
+    pub depth: usize,
 }
 
 /// Machine code for one function body.
@@ -77,6 +81,93 @@ pub type StepFn = unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32, u32) -> 
 /// `BREAK`.
 pub type BranchFn = unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32, u32, u32) -> u32;
 
+/// `call(context, next, depth, a, b, c, d)`: run an operation with decoded operands.
+/// The helper advances the frame to `next` before executing the operation. Unused
+/// operands are zero. Returns [`status::NEXT`], `EXIT` or `BREAK`.
+pub type CallFn = unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32, u32, u32, u32, u32) -> u32;
+
+/// An operation whose helper accepts decoded operands.
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum HelperKind {
+    /// Operands: destination register, object register, constant index.
+    GetPropertyByIndex,
+    /// Operands: destination register, value register, inline cache index.
+    GetPropertyByName,
+    /// Operands: destination register, binding index.
+    GetName,
+    /// Operands: destination register, binding index, inline cache index.
+    GetNameGlobal,
+    /// Operand: source register.
+    PushFromRegister,
+    /// Operand: destination register.
+    PopIntoRegister,
+    /// Operand: source register.
+    SetAccumulator,
+    /// No operands.
+    CheckReturn,
+    /// Operands: destination, key, receiver and object registers.
+    GetPropertyByValue,
+    /// Operands: value register, array register.
+    PushValueToArray,
+}
+
+impl HelperKind {
+    /// Number of decoded-operand helpers.
+    pub const COUNT: usize = 10;
+
+    /// Helpers in registration order.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::GetPropertyByIndex,
+        Self::GetPropertyByName,
+        Self::GetName,
+        Self::GetNameGlobal,
+        Self::PushFromRegister,
+        Self::PopIntoRegister,
+        Self::SetAccumulator,
+        Self::CheckReturn,
+        Self::GetPropertyByValue,
+        Self::PushValueToArray,
+    ];
+
+    /// Index in the helper registration array.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Imported symbol used by generated code.
+    #[must_use]
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::GetPropertyByIndex => "boa_jit_get_property_by_index",
+            Self::GetPropertyByName => "boa_jit_get_property_by_name",
+            Self::GetName => "boa_jit_get_name",
+            Self::GetNameGlobal => "boa_jit_get_name_global",
+            Self::PushFromRegister => "boa_jit_push_from_register",
+            Self::PopIntoRegister => "boa_jit_pop_into_register",
+            Self::SetAccumulator => "boa_jit_set_accumulator",
+            Self::CheckReturn => "boa_jit_check_return",
+            Self::GetPropertyByValue => "boa_jit_get_property_by_value",
+            Self::PushValueToArray => "boa_jit_push_value_to_array",
+        }
+    }
+
+    // Register operands precede all index operands in each helper's argument list.
+    const fn register_count(self) -> usize {
+        match self {
+            Self::GetPropertyByIndex | Self::GetPropertyByName | Self::PushValueToArray => 2,
+            Self::GetName
+            | Self::GetNameGlobal
+            | Self::PushFromRegister
+            | Self::PopIntoRegister
+            | Self::SetAccumulator => 1,
+            Self::CheckReturn => 0,
+            Self::GetPropertyByValue => 4,
+        }
+    }
+}
+
 /// The engine helpers baseline code calls.
 #[derive(Debug, Clone, Copy)]
 pub struct Helpers {
@@ -84,6 +175,8 @@ pub struct Helpers {
     pub step: StepFn,
     /// Runs one branching instruction.
     pub branch: BranchFn,
+    /// Runs decoded operations, indexed by [`HelperKind::index`].
+    pub calls: [CallFn; HelperKind::COUNT],
 }
 
 /// A two-operand Number operation with JavaScript semantics.
@@ -191,6 +284,17 @@ pub enum Insn {
         /// Address of the next instruction.
         next: u32,
     },
+    /// Run an operation with decoded operands through its imported helper.
+    Call1 {
+        /// Bytecode address.
+        pc: u32,
+        /// Address of the next instruction.
+        next: u32,
+        /// The operation's helper symbol.
+        helper: HelperKind,
+        /// Decoded operands in opcode order, padded with zeroes.
+        args: [u32; 4],
+    },
     /// Run the branching instruction at `pc` through the branch helper.
     Branch {
         /// Bytecode address.
@@ -233,6 +337,7 @@ impl Insn {
     fn pc(self) -> u32 {
         match self {
             Self::Step { pc, .. }
+            | Self::Call1 { pc, .. }
             | Self::Branch { pc, .. }
             | Self::Jump { pc, .. }
             | Self::Fast { pc, .. }
@@ -251,6 +356,7 @@ pub(crate) fn validate(insns: &[Insn], register_count: u32) -> bool {
     let reg = |r: u32| r < register_count;
     insns.iter().all(|insn| match *insn {
         Insn::Step { .. } => true,
+        Insn::Call1 { helper, args, .. } => args[..helper.register_count()].iter().all(|&r| reg(r)),
         Insn::Fast { op, .. } => match op {
             FastOp::Move { dst, src } | FastOp::Inc { dst, src, .. } => reg(dst) && reg(src),
             FastOp::Const { dst, bits } => {
@@ -280,11 +386,13 @@ pub(crate) fn emit(
     module: &mut impl Module,
     step: FuncId,
     branch: FuncId,
+    calls: [FuncId; HelperKind::COUNT],
     insns: &[Insn],
 ) {
     let pointer_type = module.target_config().pointer_type();
     let step = module.declare_func_in_func(step, builder.func);
     let branch = module.declare_func_in_func(branch, builder.func);
+    let calls = calls.map(|id| module.declare_func_in_func(id, builder.func));
 
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
@@ -360,10 +468,23 @@ pub(crate) fn emit(
             other => other,
         };
         match insn {
-            Insn::Step { pc, next } => {
-                let pc = builder.ins().iconst(types::I32, i64::from(pc));
+            Insn::Step { next, .. } | Insn::Call1 { next, .. } => {
                 let next_value = builder.ins().iconst(types::I32, i64::from(next));
-                let call = builder.ins().call(step, &[context, pc, next_value, depth]);
+                let call = match insn {
+                    Insn::Step { pc, .. } => {
+                        let pc = builder.ins().iconst(types::I32, i64::from(pc));
+                        builder.ins().call(step, &[context, pc, next_value, depth])
+                    }
+                    Insn::Call1 { helper, args, .. } => {
+                        let [a, b, c, d] =
+                            args.map(|arg| builder.ins().iconst(types::I32, i64::from(arg)));
+                        builder.ins().call(
+                            calls[helper.index()],
+                            &[context, next_value, depth, a, b, c, d],
+                        )
+                    }
+                    _ => unreachable!(),
+                };
                 let result = builder.inst_results(call)[0];
                 if let Some(target) = block_at(next).or(fall) {
                     builder
