@@ -26,7 +26,7 @@ fn cached_set_own(
     };
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
     let mut object_borrowed = object.borrow_mut();
-    let Some((_, slot)) = ic.get(object_borrowed.shape()) else {
+    let Some(slot) = ic.get(object_borrowed.shape()) else {
         return false;
     };
     if slot.attributes.is_accessor_descriptor()
@@ -70,12 +70,15 @@ fn set_by_name(
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
 
     let object_borrowed = object.borrow();
-    if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
+    if let Some(slot) = ic.get(object_borrowed.shape()) {
         let slot_index = slot.index as usize;
 
         if slot.attributes.is_accessor_descriptor() {
             let result = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-                let prototype = shape.prototype().expect("prototype should have value");
+                let prototype = object_borrowed
+                    .shape()
+                    .prototype()
+                    .expect("prototype should have value");
                 let prototype = prototype.borrow();
 
                 prototype.properties().storage[slot_index + 1].clone()
@@ -92,7 +95,10 @@ fn set_by_name(
                 )?;
             }
         } else if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-            let prototype = shape.prototype().expect("prototype should have value");
+            let prototype = object_borrowed
+                .shape()
+                .prototype()
+                .expect("prototype should have value");
             let mut prototype = prototype.borrow_mut();
 
             prototype.properties_mut().storage[slot_index] = value.clone();
