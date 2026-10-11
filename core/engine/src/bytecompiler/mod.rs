@@ -2841,7 +2841,7 @@ impl<'ctx> ByteCompiler<'ctx> {
 
         let source_map_entries = self.source_map_builder.build(final_bytecode_len.as_u32());
 
-        CodeBlock {
+        let code = CodeBlock {
             length: self.length,
             register_count,
             this_mode: self.this_mode,
@@ -2864,7 +2864,22 @@ impl<'ctx> ByteCompiler<'ctx> {
             debug_id: CodeBlock::get_next_codeblock_id(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),
+        };
+
+        #[cfg(debug_assertions)]
+        if let Err(errors) = crate::vm::verify::verify(&code) {
+            let name = code.name().to_std_string_escaped();
+            let label = if name.is_empty() {
+                let id = code.debug_id;
+                format!("[anon#{id}]")
+            } else {
+                format!("'{name}'")
+            };
+            let complaints = errors.join("\n");
+            panic!("bytecode verification failed for {label}:\n{complaints}");
         }
+
+        code
     }
 
     fn compile_declaration_pattern(
