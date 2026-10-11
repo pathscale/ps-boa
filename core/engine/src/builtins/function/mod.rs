@@ -1007,7 +1007,7 @@ pub(crate) fn function_call(
     }
 
     #[cfg(feature = "jit")]
-    if crate::vm::jit::try_call(&function.code, argument_count, context) {
+    if crate::vm::jit::try_call(&function, argument_count, context) {
         return Ok(CallValue::Complete);
     }
 

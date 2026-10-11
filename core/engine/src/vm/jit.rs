@@ -9,10 +9,11 @@
 use std::cell::Cell;
 
 use boa_jit::NumericLeafFn;
-use boa_jit::ir::{BinOp, CmpOp, Insn, Op, Rel, Unary, When};
+use boa_jit::ir::{BinOp, CmpOp, Insn, MathFn, Op, Rel, Unary, When};
 
 use crate::{
     Context, JsValue,
+    builtins::function::OrdinaryFunction,
     vm::{CodeBlock, opcode::Instruction},
 };
 
@@ -38,15 +39,21 @@ enum JitState {
     #[default]
     Cold,
     Failed,
-    Compiled(NumericLeafFn),
+    /// Machine code, and whether it computes `Math.f` inline.
+    Compiled(NumericLeafFn, bool),
 }
 
 /// Runs `code` as machine code when it is compiled and the call qualifies, leaving the
 /// result on the stack in place of the arguments, the function and `this`. Returns
 /// `false`, with the stack untouched, when the interpreter must run the call.
-pub(crate) fn try_call(code: &CodeBlock, argument_count: usize, context: &mut Context) -> bool {
-    let compiled = match code.jit.state.get() {
-        JitState::Compiled(compiled) => compiled,
+pub(crate) fn try_call(
+    function: &OrdinaryFunction,
+    argument_count: usize,
+    context: &mut Context,
+) -> bool {
+    let code = &*function.code;
+    let (compiled, uses_math) = match code.jit.state.get() {
+        JitState::Compiled(compiled, uses_math) => (compiled, uses_math),
         JitState::Failed => return false,
         JitState::Cold => {
             let calls = code.jit.calls.get().saturating_add(1);
@@ -56,15 +63,32 @@ pub(crate) fn try_call(code: &CodeBlock, argument_count: usize, context: &mut Co
             }
             // Recorded before compiling, so a failure is never retried.
             code.jit.state.set(JitState::Failed);
-            let Some(compiled) = translate(code).and_then(|insns| {
-                boa_jit::compile_numeric_leaf(insns, code.register_count, code.parameter_length)
-            }) else {
+            let Some((insns, uses_math)) = translate(code) else {
                 return false;
             };
-            code.jit.state.set(JitState::Compiled(compiled));
-            compiled
+            let Some(compiled) =
+                boa_jit::compile_numeric_leaf(insns, code.register_count, code.parameter_length)
+            else {
+                return false;
+            };
+            code.jit.state.set(JitState::Compiled(compiled, uses_math));
+            (compiled, uses_math)
         }
     };
+    // Inline `Math.f` is the intrinsic only while the callee's realm has not touched `Math`
+    // and no `with` or sloppy `eval` can shadow the global binding. A numeric leaf runs no
+    // user code, so what holds at entry holds for the whole call.
+    if uses_math {
+        let realm = function.realm();
+        let global = realm.environment();
+        let static_global = function
+            .environments
+            .current_declarative_ref(global)
+            .is_some_and(|env| !env.with() && !env.poisoned());
+        if !realm.math_pristine() || !static_global {
+            return false;
+        }
+    }
 
     if argument_count != code.parameter_length as usize {
         return false;
@@ -95,21 +119,24 @@ pub(crate) fn try_call(code: &CodeBlock, argument_count: usize, context: &mut Co
     true
 }
 
-/// One forward pass over the bytecode. `None` at the first opcode outside the subset.
-fn translate(code: &CodeBlock) -> Option<Vec<Insn>> {
+/// One forward pass over the bytecode, with whether it calls `Math`. `None` at the first
+/// opcode outside the subset.
+fn translate(code: &CodeBlock) -> Option<(Vec<Insn>, bool)> {
     let bytes = &code.bytecode.bytes;
     let mut insns = Vec::new();
+    let mut uses_math = false;
     let mut pc = 0;
     while pc < bytes.len() {
         let (instruction, next) = code.bytecode.next_instruction(pc);
         let op = translate_op(&instruction)?;
+        uses_math |= matches!(op, Op::Math { .. });
         insns.push(Insn {
             pc: u32::try_from(pc).ok()?,
             op,
         });
         pc = next;
     }
-    Some(insns)
+    Some((insns, uses_math))
 }
 
 fn translate_op(instruction: &Instruction) -> Option<Op> {
@@ -220,6 +247,27 @@ fn translate_op(instruction: &Instruction) -> Option<Op> {
         Instruction::CheckReturn => Op::CheckReturn,
         Instruction::Return => Op::Return,
         Instruction::IncrementLoopIteration => Op::LoopIter,
+        // The callee and `this` registers PrepareMath fills are read only by CallMath.
+        Instruction::PrepareMath { .. } => Op::Nop,
+        Instruction::CallMath { operands } => {
+            let name = crate::builtins::math::Math::pure_name(operands.function);
+            let function = match name.to_std_string_escaped().as_str() {
+                "max" => MathFn::Max,
+                "min" => MathFn::Min,
+                "floor" => MathFn::Floor,
+                "ceil" => MathFn::Ceil,
+                "abs" => MathFn::Abs,
+                "sqrt" => MathFn::Sqrt,
+                "trunc" => MathFn::Trunc,
+                _ => return None,
+            };
+            Op::Math {
+                f: function,
+                dst: r(operands.dst),
+                args: operands.args.map(r),
+                argc: operands.argc,
+            }
+        }
         _ => return None,
     })
 }
