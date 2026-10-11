@@ -421,6 +421,14 @@ impl NanBoxedValue {
         }
     }
 
+    /// The boxed bits, which baseline code reads and writes in registers.
+    #[cfg(feature = "jit")]
+    #[must_use]
+    #[inline(always)]
+    pub(crate) fn bits(&self) -> u64 {
+        self.value()
+    }
+
     /// Returns the value contained within this structure as a `u64`.
     #[must_use]
     #[inline(always)]
