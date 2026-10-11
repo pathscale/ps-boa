@@ -28,8 +28,8 @@ use self::iter::Windows;
 use crate::display::{JsStrDisplayEscaped, JsStrDisplayLossy, JsStringDebugInfo};
 use crate::iter::CodePointsIter;
 use crate::r#type::{Latin1, Utf16};
-pub use crate::vtable::StaticString;
 use crate::vtable::{SequenceString, SliceString};
+pub use crate::vtable::{SharedJsStr, StaticString};
 #[doc(inline)]
 pub use crate::{
     builder::{CommonJsStringBuilder, Latin1JsStringBuilder, Utf16JsStringBuilder},
@@ -114,6 +114,12 @@ pub(crate) enum JsStringKind {
 
     /// A static string that is valid for `'static` lifetime.
     Static = 3,
+
+    /// A Latin1 string owned by an atomic [`std::sync::Arc`]. See [`SharedJsStr`].
+    Latin1Shared = 4,
+
+    /// A UTF-16 string owned by an atomic [`std::sync::Arc`]. See [`SharedJsStr`].
+    Utf16Shared = 5,
 }
 
 /// A Latin1 or UTF-16–encoded, reference counted, immutable string.
@@ -560,6 +566,22 @@ impl JsString {
         }
     }
 
+    /// Creates a [`JsString`] that shares `shared`'s allocation.
+    ///
+    /// The result compares, hashes, orders, displays, and iterates as a sequence
+    /// string with the same code units. Cloning increments the atomic reference
+    /// count and dropping decrements it. [`JsString::as_str`] borrows the units
+    /// and does not copy them.
+    ///
+    /// [`SharedJsStr`] is the value that crosses threads. Clone it first to keep
+    /// a handle; cloning only bumps the atomic count. The returned [`JsString`]
+    /// is for the thread that calls this.
+    #[inline]
+    #[must_use]
+    pub fn from_shared(shared: SharedJsStr) -> Self {
+        shared.into_js_string()
+    }
+
     /// Create a [`JsString`] from an existing `JsString` and start, end
     /// range. `end` is 1 past the last character (or `== data.len()`
     /// for the last character).
@@ -747,7 +769,12 @@ impl JsString {
         Self::from_slice_skip_interning(string)
     }
 
-    /// Gets the number of `JsString`s which point to this allocation.
+    /// Gets the number of owners of this allocation.
+    ///
+    /// Returns [`None`] for a static string. Sequence and slice strings report
+    /// how many [`JsString`] values share the allocation. A string built with
+    /// [`JsString::from_shared`] reports the [`std::sync::Arc`] strong count,
+    /// including any [`SharedJsStr`] that still points at it.
     #[inline]
     #[must_use]
     pub fn refcount(&self) -> Option<usize> {
@@ -841,6 +868,13 @@ impl From<JsStr<'_>> for JsString {
     fn from(value: JsStr<'_>) -> Self {
         StaticJsStrings::get_string(&value)
             .unwrap_or_else(|| JsString::from_slice_skip_interning(value))
+    }
+}
+
+impl From<SharedJsStr> for JsString {
+    #[inline]
+    fn from(shared: SharedJsStr) -> Self {
+        Self::from_shared(shared)
     }
 }
 
