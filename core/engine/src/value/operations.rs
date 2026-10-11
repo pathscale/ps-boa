@@ -112,7 +112,7 @@ impl JsValue {
             // Fast path:
             (JsVariant::Integer32(x), JsVariant::Integer32(y)) => x
                 .checked_div(y)
-                .filter(|div| y * div == x)
+                .filter(|div| y * div == x && (*div != 0 || y > 0))
                 .map_or_else(|| Self::new(f64::from(x) / f64::from(y)), Self::new),
             (JsVariant::Float64(x), JsVariant::Float64(y)) => Self::new(x / y),
             (JsVariant::Integer32(x), JsVariant::Float64(y)) => Self::new(f64::from(x) / y),
@@ -728,7 +728,7 @@ impl JsValue {
         if let (Some(x), Some(y)) = (self.0.as_integer32(), other.0.as_integer32()) {
             return Some(
                 x.checked_div(y)
-                    .filter(|div| y * div == x)
+                    .filter(|div| y * div == x && (*div != 0 || y > 0))
                     .map_or_else(|| Self::new(f64::from(x) / f64::from(y)), Self::new),
             );
         }
