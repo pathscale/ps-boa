@@ -24,7 +24,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use icu_locale::LocaleFallbacker;
+use icu_locale::{LocaleFallbacker, fallback as icu_locale_fallback};
 use icu_provider::prelude::*;
 use icu_provider_adapters::{fallback::LocaleFallbackProvider, fork::MultiForkByMarkerProvider};
 use icu_provider_blob::BlobDataProvider;
@@ -124,8 +124,11 @@ macro_rules! provider_from_icu_crate {
 }
 
 /// Every embedded service, each still compressed and undeserialized.
+///
+/// Keep this list in sync with tools/gen-icu4x-data/src/main.rs.
 fn services() -> Vec<LazyBufferProvider> {
     alloc::vec![
+        provider_from_icu_crate!(icu_calendar),
         provider_from_icu_crate!(icu_casemap),
         provider_from_icu_crate!(icu_collator),
         provider_from_icu_crate!(icu_datetime),
@@ -133,6 +136,7 @@ fn services() -> Vec<LazyBufferProvider> {
         provider_from_icu_crate!(icu_decimal),
         provider_from_icu_crate!(icu_list),
         provider_from_icu_crate!(icu_locale),
+        provider_from_icu_crate!(icu_locale_fallback),
         provider_from_icu_crate!(icu_normalizer),
         provider_from_icu_crate!(icu_plurals),
         provider_from_icu_crate!(icu_segmenter),
@@ -153,7 +157,7 @@ struct Wrapper<T: 'static>(&'static T);
 
 impl<T> DynamicDataProvider<BufferMarker> for Wrapper<T>
 where
-    T: DynamicDataProvider<BufferMarker>,
+    T: DynamicDryDataProvider<BufferMarker>,
 {
     fn load_data(
         &self,
@@ -194,7 +198,7 @@ mod tests {
     /// The `Intl` tests in `boa_engine` only reach a handful of services --
     /// datetime, locale, decimal -- so a blob that failed to compress, or was
     /// regenerated against a mismatched icu4x, would ship undetected in the
-    /// other seven. In particular nothing else in the workspace touches the
+    /// other services. In particular nothing else in the workspace touches the
     /// segmenter, which is by far the largest of them.
     #[test]
     fn every_embedded_service_decompresses() {

@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::{error::Error, fs::File};
 
+use icu_locale::fallback as icu_locale_fallback;
 use icu_provider_export::blob_exporter::BlobExporter;
 use icu_provider_export::prelude::*;
 use icu_provider_source::{CoverageLevel, SourceDataProvider};
@@ -22,7 +23,10 @@ const BROTLI_WINDOW: u32 = 22;
 /// List of services used by `Intl` components.
 ///
 /// This must be kept in sync with the list of implemented services for `Intl`.
+/// Keep service names and marker lists in sync with core/icu_provider/src/lib.rs.
 const SERVICES: &[(&str, &[DataMarkerInfo])] = &[
+    // Calendar preferences, Japanese eras, and week data live outside datetime.
+    ("icu_calendar", icu_calendar::provider::MARKERS),
     ("icu_casemap", icu_casemap::provider::MARKERS),
     ("icu_collator", icu_collator::provider::MARKERS),
     ("icu_datetime", icu_datetime::provider::MARKERS),
@@ -30,6 +34,8 @@ const SERVICES: &[(&str, &[DataMarkerInfo])] = &[
     ("icu_decimal", icu_decimal::provider::MARKERS),
     ("icu_list", icu_list::provider::MARKERS),
     ("icu_locale", icu_locale::provider::MARKERS),
+    // ICU4X 2.3 moved language likely subtags and parents into the fallback component.
+    ("icu_locale_fallback", icu_locale_fallback::provider::MARKERS),
     ("icu_normalizer", icu_normalizer::provider::MARKERS),
     ("icu_plurals", icu_plurals::provider::MARKERS),
     ("icu_segmenter", icu_segmenter::provider::MARKERS),
