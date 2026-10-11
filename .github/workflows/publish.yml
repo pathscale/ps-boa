@@ -65,6 +65,8 @@ jobs:
       #   interner                      macros, gc
       #   ast                           interner, macros, string
       #   parser                        interner, macros, ast
+      #   jit                           no internal dependencies; the engine's optional
+      #                                 `jit` feature still needs it on the registry
       #   engine                        all of the above
       #   runtime                       engine, gc
       #
@@ -84,7 +86,7 @@ jobs:
           fi
 
           crates='ps-boa-string ps-boa-macros ps-boa-icu-provider ps-boa-gc
-                  ps-boa-interner ps-boa-ast ps-boa-parser ps-boa-engine
+                  ps-boa-interner ps-boa-ast ps-boa-parser ps-boa-jit ps-boa-engine
                   ps-boa-runtime'
 
           published=''
