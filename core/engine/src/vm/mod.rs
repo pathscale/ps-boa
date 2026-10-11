@@ -1107,6 +1107,7 @@ impl Context {
     /// Runs the current frame to completion, yielding to the caller each time `budget`
     /// "clock cycles" have passed.
     #[allow(clippy::future_not_send)]
+    #[cfg_attr(not(feature = "jit"), allow(clippy::while_let_loop))]
     pub(crate) async fn run_async_with_budget(&mut self, budget: u32) -> CompletionRecord {
         let _execution = self.enter_execution_time_limit();
         let mut runtime_budget: u32 = budget;
@@ -1153,6 +1154,7 @@ impl Context {
         CompletionRecord::Throw(JsError::from_native(JsNativeError::error()))
     }
 
+    #[cfg_attr(not(feature = "jit"), allow(clippy::while_let_loop))]
     pub(crate) fn run(&mut self) -> CompletionRecord {
         let _execution = self.enter_execution_time_limit();
         loop {
