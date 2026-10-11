@@ -23,7 +23,7 @@ const BROTLI_WINDOW: u32 = 22;
 /// List of services used by `Intl` components.
 ///
 /// This must be kept in sync with the list of implemented services for `Intl`.
-/// Keep service names and marker lists in sync with core/icu_provider/src/lib.rs.
+/// Keep service names and marker lists in sync with `core/icu_provider/src/lib.rs`.
 const SERVICES: &[(&str, &[DataMarkerInfo])] = &[
     // Calendar preferences, Japanese eras, and week data live outside datetime.
     ("icu_calendar", icu_calendar::provider::MARKERS),
