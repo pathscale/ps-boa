@@ -30,6 +30,7 @@ smol.workspace = true
 unsend = { workspace = true, features = ["alloc"] }
 async-channel.workspace = true
 rustls.workspace = true
+rusty_alloc-api = { workspace = true, optional = true }
 
 [features]
 default = [
@@ -42,16 +43,9 @@ default = [
     "fetch",
 ]
 dhat = ["dep:dhat"]
-fast-allocator = ["dep:mimalloc-safe", "dep:jemallocator"]
+fast-allocator = ["dep:rusty_alloc-api"]
 fetch = ["boa_runtime/fetch", "boa_runtime/reqwest-blocking"]
 
-[target.x86_64-unknown-linux-gnu.dependencies]
-jemallocator = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-mimalloc-safe = { workspace = true, optional = true, features = [
-    "skip_collect_on_exit",
-] }
 
 [[bin]]
 name = "boa"
