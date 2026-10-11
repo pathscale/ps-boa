@@ -1,12 +1,14 @@
-//! Baseline code: every bytecode instruction becomes a direct call to an engine helper
-//! that runs the interpreter's handler for it, with control flow between instructions
-//! compiled to native branches.
+//! Baseline code: numeric operations and branches have inline fast paths, while other
+//! bytecode instructions call engine helpers that run the interpreter's handlers.
+//! Control flow between instructions is compiled to native branches.
 //!
 //! The code works on the interpreter's own frame and registers, so returning to the
 //! interpreter at any instruction boundary is always valid. Each helper reports what the
-//! code does next with a [`Status`] value.
+//! code does next with a [`status`] value.
 
-use cranelift_codegen::ir::{self, InstBuilder, types};
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::immediates::Ieee64;
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Module};
 use std::collections::HashMap;
@@ -269,6 +271,10 @@ pub(crate) fn validate(insns: &[Insn], register_count: u32) -> bool {
 }
 
 /// Emits `fn(context, depth, frame) -> status` for `insns`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Lowering keeps instruction control flow and helper exits together."
+)]
 pub(crate) fn emit(
     builder: &mut FunctionBuilder<'_>,
     module: &mut impl Module,
@@ -276,6 +282,7 @@ pub(crate) fn emit(
     branch: FuncId,
     insns: &[Insn],
 ) {
+    let pointer_type = module.target_config().pointer_type();
     let step = module.declare_func_in_func(step, builder.func);
     let branch = module.declare_func_in_func(branch, builder.func);
 
@@ -284,6 +291,7 @@ pub(crate) fn emit(
     builder.switch_to_block(entry);
     let context = builder.block_params(entry)[0];
     let depth = builder.block_params(entry)[1];
+    let frame = builder.block_params(entry)[2];
 
     let blocks: Vec<ir::Block> = insns.iter().map(|_| builder.create_block()).collect();
     let index: HashMap<u32, usize> = insns
@@ -294,22 +302,61 @@ pub(crate) fn emit(
     // Falling off the end leaves the frame to the interpreter.
     let exit = builder.create_block();
     builder.append_block_param(exit, types::I32);
+    let falloff = builder.create_block();
     let block_at = |pc: u32| index.get(&pc).map(|&i| blocks[i]);
 
     builder.ins().jump(blocks[0], &[]);
 
     for (i, insn) in insns.iter().enumerate() {
         builder.switch_to_block(blocks[i]);
+        // Reload at every instruction, including the first one on entry. A helper
+        // may have moved the stack before reaching this block.
+        let regs = builder
+            .ins()
+            .load(pointer_type, MemFlagsData::trusted(), frame, 0);
+        let argc = builder
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), frame, 8);
         let fall = blocks.get(i + 1).copied();
         let exit_code = |builder: &mut FunctionBuilder<'_>| {
             builder.ins().iconst(types::I32, i64::from(status::EXIT))
         };
-        // Inline fast paths are not emitted yet: they run through the helpers.
+        // Inline paths branch to successors directly; rejected cases use the same
+        // helper lowering as Step and Branch.
         let insn = match *insn {
-            Insn::Fast { pc, next, .. } => Insn::Step { pc, next },
+            Insn::Fast { pc, next, op } => {
+                let slow = builder.create_block();
+                Inline {
+                    builder,
+                    regs,
+                    argc,
+                    slow,
+                }
+                .emit_op(op, block_at(next).or(fall).unwrap_or(falloff));
+                builder.switch_to_block(slow);
+                Insn::Step { pc, next }
+            }
             Insn::FastBranch {
-                pc, next, target, ..
-            } => Insn::Branch { pc, next, target },
+                pc,
+                next,
+                target,
+                cond,
+            } => {
+                let slow = builder.create_block();
+                Inline {
+                    builder,
+                    regs,
+                    argc,
+                    slow,
+                }
+                .emit_cond(
+                    cond,
+                    block_at(next).unwrap_or(falloff),
+                    block_at(target).unwrap_or(falloff),
+                );
+                builder.switch_to_block(slow);
+                Insn::Branch { pc, next, target }
+            }
             other => other,
         };
         match insn {
@@ -348,11 +395,10 @@ pub(crate) fn emit(
                     .ins()
                     .brif(result, not_next, &[], next_block, &next_args);
                 builder.switch_to_block(not_next);
-                let taken = builder.ins().icmp_imm_u(
-                    ir::condcodes::IntCC::Equal,
-                    result,
-                    i64::from(status::TAKEN),
-                );
+                let taken =
+                    builder
+                        .ins()
+                        .icmp_imm_u(IntCC::Equal, result, i64::from(status::TAKEN));
                 let leave = builder.create_block();
                 let taken_block = block_at(target).unwrap_or(leave);
                 builder.ins().brif(taken, taken_block, &[], leave, &[]);
@@ -371,7 +417,408 @@ pub(crate) fn emit(
         }
     }
 
+    builder.switch_to_block(falloff);
+    let code = builder.ins().iconst(types::I32, i64::from(status::EXIT));
+    builder.ins().jump(exit, &[code.into()]);
+
     builder.switch_to_block(exit);
     let result = builder.block_params(exit)[0];
     builder.ins().return_(&[result]);
+}
+
+struct Number {
+    is_int: ir::Value,
+    is_numeric: ir::Value,
+    int: ir::Value,
+    float: ir::Value,
+}
+
+struct Inline<'a, 'f> {
+    builder: &'a mut FunctionBuilder<'f>,
+    regs: ir::Value,
+    argc: ir::Value,
+    slow: ir::Block,
+}
+
+impl Inline<'_, '_> {
+    fn emit_op(&mut self, op: FastOp, next: ir::Block) {
+        let dst = match op {
+            FastOp::Move { dst, .. }
+            | FastOp::Const { dst, .. }
+            | FastOp::Arith { dst, .. }
+            | FastOp::Inc { dst, .. }
+            | FastOp::GetArg { dst, .. } => dst,
+        };
+        let old = self.load_reg(dst);
+        self.reject_pointer(old);
+        match op {
+            FastOp::Move { src, .. } => {
+                let value = self.load_reg(src);
+                self.reject_pointer(value);
+                self.store_and_go(dst, value, next);
+            }
+            FastOp::Const { bits, .. } => {
+                let value = self.builder.ins().iconst(types::I64, imm_bits(bits));
+                self.store_and_go(dst, value, next);
+            }
+            FastOp::Arith { op, lhs, rhs, .. } => {
+                let left = self.load_reg(lhs);
+                let right = self.load_reg(rhs);
+                let left = self.number(left);
+                let right = self.number(right);
+                let floats = self.split_numbers(&left, &right);
+                self.emit_arith(op, dst, &left, &right, floats, next);
+            }
+            FastOp::Inc { src, dec, .. } => {
+                let value = self.load_reg(src);
+                let value = self.number(value);
+                self.guard(value.is_numeric);
+                let one = self.builder.ins().iconst(types::I32, 1);
+                let (integer, overflow) = if dec {
+                    self.builder.ins().ssub_overflow(value.int, one)
+                } else {
+                    self.builder.ins().sadd_overflow(value.int, one)
+                };
+                let fits = self.builder.ins().icmp_imm_u(IntCC::Equal, overflow, 0);
+                let use_int = self.builder.ins().band(value.is_int, fits);
+                let one = self.fconst(1.0);
+                let float = if dec {
+                    self.builder.ins().fsub(value.float, one)
+                } else {
+                    self.builder.ins().fadd(value.float, one)
+                };
+                let integer = self.box_int(integer);
+                let float = self.box_float(float);
+                let result = self.builder.ins().select(use_int, integer, float);
+                self.store_and_go(dst, result, next);
+            }
+            FastOp::GetArg { index, .. } => {
+                self.emit_arg(index, dst, next);
+            }
+        }
+    }
+
+    fn emit_arg(&mut self, index: u32, dst: u32, next: ir::Block) {
+        let present = self.builder.create_block();
+        let absent = self.builder.create_block();
+        let in_range =
+            self.builder
+                .ins()
+                .icmp_imm_u(IntCC::UnsignedGreaterThan, self.argc, i64::from(index));
+        self.builder.ins().brif(in_range, present, &[], absent, &[]);
+
+        self.builder.switch_to_block(present);
+        let argc = self.builder.ins().uextend(types::I64, self.argc);
+        let index = self.builder.ins().iconst(types::I64, i64::from(index));
+        let distance = self.builder.ins().isub(argc, index);
+        let bytes = self.builder.ins().ishl_imm_s(distance, 3);
+        let address = self.builder.ins().isub(self.regs, bytes);
+        let value = self
+            .builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), address, 0);
+        self.reject_pointer(value);
+        self.store_and_go(dst, value, next);
+
+        self.builder.switch_to_block(absent);
+        let value = self
+            .builder
+            .ins()
+            .iconst(types::I64, imm_bits(boxed::UNDEFINED));
+        self.store_and_go(dst, value, next);
+    }
+
+    fn emit_arith(
+        &mut self,
+        op: Arith,
+        dst: u32,
+        left: &Number,
+        right: &Number,
+        floats: ir::Block,
+        next: ir::Block,
+    ) {
+        match op {
+            Arith::Div => {
+                self.emit_int_div(dst, left.int, right.int, floats, next);
+            }
+            Arith::Add | Arith::Sub | Arith::Mul => {
+                let (integer, overflow) = match op {
+                    Arith::Add => self.builder.ins().sadd_overflow(left.int, right.int),
+                    Arith::Sub => self.builder.ins().ssub_overflow(left.int, right.int),
+                    Arith::Mul => self.builder.ins().smul_overflow(left.int, right.int),
+                    Arith::Div => unreachable!(),
+                };
+                let use_float = if matches!(op, Arith::Mul) {
+                    let zero = self.builder.ins().icmp_imm_u(IntCC::Equal, integer, 0);
+                    let left_negative =
+                        self.builder
+                            .ins()
+                            .icmp_imm_u(IntCC::SignedLessThan, left.int, 0);
+                    let right_negative =
+                        self.builder
+                            .ins()
+                            .icmp_imm_u(IntCC::SignedLessThan, right.int, 0);
+                    let negative = self.builder.ins().bor(left_negative, right_negative);
+                    let negative_zero = self.builder.ins().band(zero, negative);
+                    self.builder.ins().bor(overflow, negative_zero)
+                } else {
+                    overflow
+                };
+                let float = self.float_arith(op, left.float, right.float);
+                let float = self.box_float(float);
+                let integer = self.box_int(integer);
+                let result = self.builder.ins().select(use_float, float, integer);
+                self.store_and_go(dst, result, next);
+            }
+        }
+
+        self.builder.switch_to_block(floats);
+        let result = self.float_arith(op, left.float, right.float);
+        let result = self.box_float(result);
+        self.store_and_go(dst, result, next);
+    }
+
+    fn emit_int_div(
+        &mut self,
+        dst: u32,
+        left: ir::Value,
+        right: ir::Value,
+        floats: ir::Block,
+        next: ir::Block,
+    ) {
+        let zero = self.builder.ins().icmp_imm_u(IntCC::Equal, right, 0);
+        let min = self
+            .builder
+            .ins()
+            .icmp_imm_u(IntCC::Equal, left, i64::from(i32::MIN));
+        let minus_one = self.builder.ins().icmp_imm_u(IntCC::Equal, right, -1);
+        let overflow = self.builder.ins().band(min, minus_one);
+        let unsafe_division = self.builder.ins().bor(zero, overflow);
+        let divide = self.builder.create_block();
+        // Neither sdiv nor srem may execute for zero or MIN / -1.
+        self.builder
+            .ins()
+            .brif(unsafe_division, floats, &[], divide, &[]);
+
+        self.builder.switch_to_block(divide);
+        let quotient = self.builder.ins().sdiv(left, right);
+        let remainder = self.builder.ins().srem(left, right);
+        let exact = self.builder.ins().icmp_imm_u(IntCC::Equal, remainder, 0);
+        let left_zero = self.builder.ins().icmp_imm_u(IntCC::Equal, left, 0);
+        let right_negative = self
+            .builder
+            .ins()
+            .icmp_imm_u(IntCC::SignedLessThan, right, 0);
+        let negative_zero = self.builder.ins().band(left_zero, right_negative);
+        let positive_zero = self
+            .builder
+            .ins()
+            .icmp_imm_u(IntCC::Equal, negative_zero, 0);
+        let use_int = self.builder.ins().band(exact, positive_zero);
+        let integer = self.builder.create_block();
+        self.builder.ins().brif(use_int, integer, &[], floats, &[]);
+
+        self.builder.switch_to_block(integer);
+        let result = self.box_int(quotient);
+        self.store_and_go(dst, result, next);
+    }
+
+    fn emit_cond(&mut self, cond: FastCond, next: ir::Block, target: ir::Block) {
+        match cond {
+            FastCond::JumpUnless { rel, lhs, rhs } => {
+                let left = self.load_reg(lhs);
+                let right = self.load_reg(rhs);
+                let left = self.number(left);
+                let right = self.number(right);
+                let floats = self.split_numbers(&left, &right);
+                let cc = match rel {
+                    Rel::Lt => IntCC::SignedLessThan,
+                    Rel::Le => IntCC::SignedLessThanOrEqual,
+                    Rel::Gt => IntCC::SignedGreaterThan,
+                    Rel::Ge => IntCC::SignedGreaterThanOrEqual,
+                };
+                let holds = self.builder.ins().icmp(cc, left.int, right.int);
+                self.builder.ins().brif(holds, next, &[], target, &[]);
+
+                self.builder.switch_to_block(floats);
+                let cc = match rel {
+                    Rel::Lt => FloatCC::LessThan,
+                    Rel::Le => FloatCC::LessThanOrEqual,
+                    Rel::Gt => FloatCC::GreaterThan,
+                    Rel::Ge => FloatCC::GreaterThanOrEqual,
+                };
+                // Ordered relations are false whenever either operand is NaN.
+                let holds = self.builder.ins().fcmp(cc, left.float, right.float);
+                self.builder.ins().brif(holds, next, &[], target, &[]);
+            }
+            FastCond::JumpIf { when_true, value } => {
+                let value = self.load_reg(value);
+                let number = self.number(value);
+                let boolean = self.kind_is(value, boxed::KIND_BOOLEAN);
+                let nullish = self.kind_is(value, boxed::UNDEFINED & boxed::MASK_KIND);
+                let scalar = self.builder.ins().bor(number.is_numeric, boolean);
+                let supported = self.builder.ins().bor(scalar, nullish);
+                // Pointer kinds and unsupported tags must use the branch helper.
+                self.guard(supported);
+
+                let bit = self.builder.ins().band_imm_s(value, 1);
+                let bool_truth = self.builder.ins().icmp_imm_u(IntCC::NotEqual, bit, 0);
+                let int_truth = self
+                    .builder
+                    .ins()
+                    .icmp_imm_u(IntCC::NotEqual, number.int, 0);
+                let zero = self.fconst(0.0);
+                let nonzero = self
+                    .builder
+                    .ins()
+                    .fcmp(FloatCC::NotEqual, number.float, zero);
+                let ordered = self
+                    .builder
+                    .ins()
+                    .fcmp(FloatCC::Ordered, number.float, number.float);
+                let float_truth = self.builder.ins().band(nonzero, ordered);
+                let num_truth = self
+                    .builder
+                    .ins()
+                    .select(number.is_int, int_truth, float_truth);
+                let truth = self.builder.ins().select(boolean, bool_truth, num_truth);
+                let truth = self.builder.ins().band(scalar, truth);
+                let (yes, no) = if when_true {
+                    (target, next)
+                } else {
+                    (next, target)
+                };
+                self.builder.ins().brif(truth, yes, &[], no, &[]);
+            }
+        }
+    }
+
+    fn reg_address(&mut self, reg: u32) -> ir::Value {
+        self.builder.ins().iadd_imm_s(self.regs, i64::from(reg) * 8)
+    }
+
+    fn load_reg(&mut self, reg: u32) -> ir::Value {
+        let address = self.reg_address(reg);
+        self.builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), address, 0)
+    }
+
+    fn store_and_go(&mut self, dst: u32, value: ir::Value, next: ir::Block) {
+        let address = self.reg_address(dst);
+        self.builder
+            .ins()
+            .store(MemFlagsData::trusted(), value, address, 0);
+        self.builder.ins().jump(next, &[]);
+    }
+
+    fn guard(&mut self, condition: ir::Value) {
+        let fast = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(condition, fast, &[], self.slow, &[]);
+        self.builder.switch_to_block(fast);
+    }
+
+    fn reject_pointer(&mut self, value: ir::Value) {
+        let masked = self
+            .builder
+            .ins()
+            .band_imm_s(value, imm_bits(boxed::MASK_POINTER));
+        let safe =
+            self.builder
+                .ins()
+                .icmp_imm_u(IntCC::NotEqual, masked, imm_bits(boxed::MASK_POINTER));
+        self.guard(safe);
+    }
+
+    fn kind_is(&mut self, value: ir::Value, kind: u64) -> ir::Value {
+        let masked = self
+            .builder
+            .ins()
+            .band_imm_s(value, imm_bits(boxed::MASK_KIND));
+        self.builder
+            .ins()
+            .icmp_imm_u(IntCC::Equal, masked, imm_bits(kind))
+    }
+
+    fn number(&mut self, value: ir::Value) -> Number {
+        let is_int = self.kind_is(value, boxed::KIND_INT32);
+        let exponent = self
+            .builder
+            .ins()
+            .band_imm_s(value, imm_bits(boxed::MASK_NAN));
+        let finite =
+            self.builder
+                .ins()
+                .icmp_imm_u(IntCC::NotEqual, exponent, imm_bits(boxed::MASK_NAN));
+        let infinity = self.kind_is(value, boxed::KIND_INFINITY);
+        let nan = self.kind_is(value, boxed::CANONICAL_NAN & boxed::MASK_KIND);
+        let special_float = self.builder.ins().bor(infinity, nan);
+        let is_float = self.builder.ins().bor(finite, special_float);
+        let is_numeric = self.builder.ins().bor(is_int, is_float);
+        let int = self.builder.ins().ireduce(types::I32, value);
+        let converted = self.builder.ins().fcvt_from_sint(types::F64, int);
+        let raw = self
+            .builder
+            .ins()
+            .bitcast(types::F64, MemFlagsData::new(), value);
+        let float = self.builder.ins().select(is_int, converted, raw);
+        Number {
+            is_int,
+            is_numeric,
+            int,
+            float,
+        }
+    }
+
+    /// Leaves the builder in the both-int32 block and returns the float block.
+    fn split_numbers(&mut self, left: &Number, right: &Number) -> ir::Block {
+        let numbers = self.builder.ins().band(left.is_numeric, right.is_numeric);
+        self.guard(numbers);
+        let integers = self.builder.ins().band(left.is_int, right.is_int);
+        let ints = self.builder.create_block();
+        let floats = self.builder.create_block();
+        self.builder.ins().brif(integers, ints, &[], floats, &[]);
+        self.builder.switch_to_block(ints);
+        floats
+    }
+
+    fn box_int(&mut self, value: ir::Value) -> ir::Value {
+        let value = self.builder.ins().uextend(types::I64, value);
+        self.builder
+            .ins()
+            .bor_imm_s(value, imm_bits(boxed::KIND_INT32))
+    }
+
+    fn box_float(&mut self, value: ir::Value) -> ir::Value {
+        let nan = self.builder.ins().fcmp(FloatCC::Unordered, value, value);
+        let bits = self
+            .builder
+            .ins()
+            .bitcast(types::I64, MemFlagsData::new(), value);
+        let canonical = self
+            .builder
+            .ins()
+            .iconst(types::I64, imm_bits(boxed::CANONICAL_NAN));
+        self.builder.ins().select(nan, canonical, bits)
+    }
+
+    fn fconst(&mut self, value: f64) -> ir::Value {
+        self.builder.ins().f64const(Ieee64::with_float(value))
+    }
+
+    fn float_arith(&mut self, op: Arith, left: ir::Value, right: ir::Value) -> ir::Value {
+        match op {
+            Arith::Add => self.builder.ins().fadd(left, right),
+            Arith::Sub => self.builder.ins().fsub(left, right),
+            Arith::Mul => self.builder.ins().fmul(left, right),
+            Arith::Div => self.builder.ins().fdiv(left, right),
+        }
+    }
+}
+
+/// Interprets a boxed bit pattern as a signed Cranelift immediate without changing it.
+fn imm_bits(value: u64) -> i64 {
+    i64::from_ne_bytes(value.to_ne_bytes())
 }
