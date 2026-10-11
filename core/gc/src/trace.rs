@@ -31,7 +31,20 @@ impl Tracer {
         }
     }
 
-    pub(crate) fn enqueue(&mut self, node: GcErasedPointer) {
+    /// Marks and queues a node unless it has already been discovered.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must remain valid until the queue has been drained, and this
+    /// method must only be called during the collector's mark phase.
+    #[inline]
+    pub(crate) unsafe fn enqueue(&mut self, node: GcErasedPointer) {
+        // SAFETY: The caller guarantees the allocation remains valid.
+        let node_ref = unsafe { node.as_ref() };
+        if node_ref.is_marked() {
+            return;
+        }
+        node_ref.header.mark();
         self.queue.push_back(node);
     }
 
@@ -43,10 +56,7 @@ impl Tracer {
     pub(crate) unsafe fn trace_until_empty(&mut self) {
         while let Some(node) = self.queue.pop_front() {
             let node_ref = unsafe { node.as_ref() };
-            if node_ref.is_marked() {
-                continue;
-            }
-            node_ref.header.mark();
+            // Enqueue marked the node, so a queued node is traced exactly once.
             let trace_fn = node_ref.trace_fn();
 
             // SAFETY: The function pointer is appropriate for this node type because we extract it from it's VTable.
