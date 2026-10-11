@@ -1006,6 +1006,11 @@ pub(crate) fn function_call(
             .into());
     }
 
+    #[cfg(feature = "jit")]
+    if crate::vm::jit::try_call(&function.code, argument_count, context) {
+        return Ok(CallValue::Complete);
+    }
+
     let code = function.code.clone();
     let environments = function.environments.clone();
     let script_or_module = function.script_or_module.clone();

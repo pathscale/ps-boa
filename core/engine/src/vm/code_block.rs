@@ -172,6 +172,10 @@ pub struct CodeBlock {
     #[cfg(feature = "trace")]
     #[unsafe_ignore_trace]
     pub(crate) traced: Cell<bool>,
+
+    #[cfg(feature = "jit")]
+    #[unsafe_ignore_trace]
+    pub(crate) jit: crate::vm::jit::JitSlot,
 }
 
 /// ---- `CodeBlock` public API ----
@@ -204,6 +208,8 @@ impl CodeBlock {
             debug_id: CodeBlock::get_next_codeblock_id(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),
+            #[cfg(feature = "jit")]
+            jit: crate::vm::jit::JitSlot::default(),
         }
     }
 

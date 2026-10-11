@@ -27,6 +27,9 @@ jsvalue-enum = []
 deser = ["boa_interner/serde", "boa_ast/serde"]
 either = ["dep:either", "boa_gc/either"]
 
+# Baseline JIT: hot numeric leaf functions run as Cranelift machine code. Off by default.
+jit = ["dep:boa_jit"]
+
 # Enables the `Intl` builtin object and bundles a default ICU4X data provider.
 # Prefer this over `intl` if you just want to enable `Intl` without dealing with the
 # generation of ICU4X data.
@@ -94,6 +97,7 @@ native-backtrace = []
 [dependencies]
 tag_ptr.workspace = true
 boa_interner.workspace = true
+boa_jit = { workspace = true, optional = true }
 boa_gc = { workspace = true, features = ["thin-vec", "boa_string", "arrayvec"] }
 boa_macros.workspace = true
 boa_ast.workspace = true

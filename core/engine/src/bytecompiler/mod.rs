@@ -3000,6 +3000,8 @@ impl<'ctx> ByteCompiler<'ctx> {
             debug_id: CodeBlock::get_next_codeblock_id(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),
+            #[cfg(feature = "jit")]
+            jit: crate::vm::jit::JitSlot::default(),
         };
 
         #[cfg(debug_assertions)]
