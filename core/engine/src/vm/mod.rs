@@ -151,7 +151,9 @@ impl Stack {
 
     /// Set a register value by index, relative to the given frame's `rp`.
     pub(crate) fn set_register(&mut self, frame: &CallFrame, index: usize, value: JsValue) {
-        self.stack[frame.rp as usize + index] = value;
+        let old = std::mem::replace(&mut self.stack[frame.rp as usize + index], value);
+        // SAFETY: the interpreter never runs inside a collection sweep.
+        unsafe { old.release_outside_collection() };
     }
 
     /// Truncate the stack to the given frame.
@@ -498,9 +500,10 @@ impl Vm {
         // SAFETY: Register indices are determined by the bytecode compiler and are
         // guaranteed to be within the register bounds for well-formed bytecode. The
         // debug_assert above catches any compiler bugs during development.
-        unsafe {
-            *self.stack.stack.get_unchecked_mut(rp + index) = value;
-        }
+        let old =
+            unsafe { std::mem::replace(self.stack.stack.get_unchecked_mut(rp + index), value) };
+        // SAFETY: the interpreter never runs inside a collection sweep.
+        unsafe { old.release_outside_collection() };
     }
 
     #[track_caller]
