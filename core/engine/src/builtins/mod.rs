@@ -460,5 +460,7 @@ pub(crate) fn set_default_global_bindings(context: &mut Context) -> JsResult<()>
         global_binding::<temporal::Temporal>(context)?;
     }
 
+    context.realm().mark_math_pristine();
+
     Ok(())
 }

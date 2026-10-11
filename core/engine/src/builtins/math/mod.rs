@@ -109,29 +109,55 @@ impl BuiltInObject for Math {
 }
 
 impl Math {
+    /// The common Math functions that, given only numbers, run no user code and cannot
+    /// throw. A `CallMath` function id is an index into this table.
+    const PURE: [(&'static str, NativeFunctionPointer); 17] = [
+        ("max", Math::max),
+        ("min", Math::min),
+        ("floor", Math::floor),
+        ("ceil", Math::ceil),
+        ("abs", Math::abs),
+        ("sqrt", Math::sqrt),
+        ("sin", Math::sin),
+        ("cos", Math::cos),
+        ("round", Math::round),
+        ("trunc", Math::trunc),
+        ("atan2", Math::atan2),
+        ("hypot", Math::hypot),
+        ("exp", Math::exp),
+        ("pow", Math::pow),
+        ("sign", Math::sign),
+        ("log", Math::log),
+        ("imul", Math::imul),
+    ];
+
+    /// Number of `CallMath` function ids. Only the bytecode verifier reads it.
+    #[cfg(debug_assertions)]
+    pub(crate) const PURE_COUNT: usize = Self::PURE.len();
+
     /// Returns `true` if `f` is one of the common Math functions that, given only numbers, run
     /// no user code and cannot throw.
     pub(crate) fn is_pure_on_numbers(f: &NativeFunction) -> bool {
-        const PURE: [NativeFunctionPointer; 17] = [
-            Math::max,
-            Math::min,
-            Math::floor,
-            Math::ceil,
-            Math::abs,
-            Math::sqrt,
-            Math::sin,
-            Math::cos,
-            Math::round,
-            Math::trunc,
-            Math::atan2,
-            Math::hypot,
-            Math::exp,
-            Math::pow,
-            Math::sign,
-            Math::log,
-            Math::imul,
-        ];
-        PURE.iter().any(|&pure| f.is_fn_ptr(pure))
+        Self::PURE.iter().any(|&(_, pure)| f.is_fn_ptr(pure))
+    }
+
+    /// The `CallMath` function id of `Math.<name>`, if it is one of [`Self::PURE`].
+    pub(crate) fn pure_id(name: &JsString) -> Option<u8> {
+        Self::PURE
+            .iter()
+            .position(|&(candidate, _)| name == candidate)
+            .and_then(|index| u8::try_from(index).ok())
+    }
+
+    /// Property name of `CallMath` function `id`.
+    pub(crate) fn pure_name(id: u8) -> JsString {
+        JsString::from(Self::PURE[usize::from(id)].0)
+    }
+
+    /// Calls `CallMath` function `id` with `args`. Every function in [`Self::PURE`]
+    /// ignores `this`.
+    pub(crate) fn call_pure(id: u8, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+        (Self::PURE[usize::from(id)].1)(&JsValue::undefined(), args, context)
     }
 
     /// Get the absolute value of a number.

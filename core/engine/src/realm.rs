@@ -7,6 +7,7 @@
 //! A realm is represented in this implementation as a Realm struct with the fields specified from the spec.
 
 use std::any::TypeId;
+use std::cell::Cell;
 
 use crate::{
     Context, HostDefined, JsNativeError, JsObject, JsResult, JsString,
@@ -18,6 +19,7 @@ use crate::{
     environments::DeclarativeEnvironment,
     module::Module,
     object::shape::RootShape,
+    string::StaticJsStrings,
 };
 use boa_ast::scope::Scope;
 use boa_engine::JsValue;
@@ -72,6 +74,10 @@ struct Inner {
     host_classes: GcRefCell<FxHashMap<TypeId, StandardConstructor>>,
 
     host_defined: GcRefCell<HostDefined>,
+
+    // Safety: a bool has nothing to trace.
+    #[unsafe_ignore_trace]
+    math_pristine: Cell<bool>,
 }
 
 impl Realm {
@@ -100,6 +106,7 @@ impl Realm {
                 loaded_modules: GcRefCell::default(),
                 host_classes: GcRefCell::default(),
                 host_defined: GcRefCell::default(),
+                math_pristine: Cell::new(false),
             }),
         };
 
@@ -178,6 +185,41 @@ impl Realm {
 
     pub(crate) fn global_this(&self) -> &JsObject {
         &self.inner.global_this
+    }
+
+    /// `true` while this realm's global `Math` is still `%Math%` and the pure
+    /// `Math` methods are still the intrinsic functions.
+    #[inline]
+    pub(crate) fn math_pristine(&self) -> bool {
+        self.inner.math_pristine.get()
+    }
+
+    /// Record that default global bindings installed the intrinsic `Math`.
+    #[inline]
+    pub(crate) fn mark_math_pristine(&self) {
+        self.inner.math_pristine.set(true);
+    }
+
+    #[inline]
+    pub(crate) fn clear_math_pristine(&self) {
+        self.inner.math_pristine.set(false);
+    }
+
+    /// Permanently clear the pristine-`Math` flag if this write can change it.
+    ///
+    /// Unrelated objects miss on one pointer compare against `%Math%`. The global
+    /// object is compared only when `key` is `Math`.
+    #[inline]
+    pub(crate) fn observe_math_write(&self, object: &JsObject, key: &PropertyKey) {
+        if !self.inner.math_pristine.get() {
+            return;
+        }
+        if self.intrinsics().objects().is_math(object)
+            || (matches!(key, PropertyKey::String(name) if *name == StaticJsStrings::MATH)
+                && JsObject::equals(object, self.global_object()))
+        {
+            self.inner.math_pristine.set(false);
+        }
     }
 
     pub(crate) fn loaded_modules(&self) -> &GcRefCell<FxHashMap<JsString, Module>> {

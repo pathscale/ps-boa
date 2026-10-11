@@ -657,13 +657,17 @@ pub(crate) fn ordinary_define_own_property(
     let extensible = obj.__is_extensible__(context)?;
 
     // 3. Return ValidateAndApplyPropertyDescriptor(O, P, extensible, Desc, current).
-    Ok(validate_and_apply_property_descriptor(
+    let applied = validate_and_apply_property_descriptor(
         Some((obj, key)),
         extensible,
         desc,
         current,
         context.slot(),
-    ))
+    );
+    if applied {
+        context.realm().observe_math_write(obj, key);
+    }
+    Ok(applied)
 }
 
 /// Abstract operation `OrdinaryHasProperty`.
@@ -946,6 +950,7 @@ pub(crate) fn ordinary_delete(
             Some(desc) if desc.expect_configurable() => {
                 // a. Remove the own property with name P from O.
                 obj.borrow_mut().remove(key);
+                context.realm().observe_math_write(obj, key);
                 // b. Return true.
                 true
             }

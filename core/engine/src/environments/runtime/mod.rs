@@ -723,6 +723,9 @@ impl Context {
                 if let Some(slot) = global_own_data_slot(&obj, &key.clone().into())
                     && slot.attributes.contains(SlotAttributes::WRITABLE)
                 {
+                    if self.realm().math_pristine() && key == crate::string::StaticJsStrings::MATH {
+                        self.realm().clear_math_pristine();
+                    }
                     obj.borrow_mut().properties_mut().storage[slot.index as usize] = value;
                     return Ok(());
                 }

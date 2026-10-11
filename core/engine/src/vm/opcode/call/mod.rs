@@ -3,14 +3,17 @@ use std::{cell::RefCell, mem::MaybeUninit};
 use boa_string::JsString;
 use dynify::Dynify;
 
+use super::args::Argument;
 use super::{IndexOperand, RegisterOperand};
 use crate::{
     Context, JsError, JsExpect, JsObject, JsResult, JsValue, NativeFunction,
-    builtins::{Promise, promise::PromiseCapability},
+    builtins::{Promise, math::Math, promise::PromiseCapability},
     error::JsNativeError,
     job::NativeAsyncJob,
     module::{ImportAttribute, ModuleKind, ModuleRequest, Referrer},
-    object::FunctionObjectBuilder,
+    object::{FunctionObjectBuilder, internal_methods::InternalMethodPropertyContext},
+    property::PropertyKey,
+    string::StaticJsStrings,
     vm::opcode::Operation,
 };
 
@@ -621,4 +624,248 @@ impl Operation for ImportCall {
     const NAME: &'static str = "ImportCall";
     const INSTRUCTION: &'static str = "INST - ImportCall";
     const COST: u8 = 15;
+}
+
+/// Operands of [`Opcode::PrepareMath`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrepareMathOperands {
+    pub(crate) callee: RegisterOperand,
+    pub(crate) this: RegisterOperand,
+    pub(crate) function: u8,
+    pub(crate) binding_index: IndexOperand,
+}
+
+impl std::fmt::Display for PrepareMathOperands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "callee:{}, this:{}, function:{}, binding_index:{}",
+            self.callee, self.this, self.function, self.binding_index
+        )
+    }
+}
+
+impl Argument for PrepareMathOperands {
+    fn encode(self, bytes: &mut Vec<u8>) {
+        self.callee.encode(bytes);
+        self.this.encode(bytes);
+        self.function.encode(bytes);
+        self.binding_index.encode(bytes);
+    }
+
+    fn decode(bytes: &[u8], pos: usize) -> (Self, usize) {
+        let (callee, pos) = RegisterOperand::decode(bytes, pos);
+        let (this, pos) = RegisterOperand::decode(bytes, pos);
+        let (function, pos) = u8::decode(bytes, pos);
+        let (binding_index, pos) = IndexOperand::decode(bytes, pos);
+        (
+            Self {
+                callee,
+                this,
+                function,
+                binding_index,
+            },
+            pos,
+        )
+    }
+}
+
+/// Operands of [`Opcode::CallMath`].
+///
+/// `args` holds three registers. Only the first `argc` entries are live.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallMathOperands {
+    pub(crate) dst: RegisterOperand,
+    pub(crate) callee: RegisterOperand,
+    pub(crate) this: RegisterOperand,
+    pub(crate) function: u8,
+    pub(crate) argc: u8,
+    pub(crate) args: [RegisterOperand; 3],
+}
+
+impl std::fmt::Display for CallMathOperands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "dst:{}, callee:{}, this:{}, function:{}, argc:{}",
+            self.dst, self.callee, self.this, self.function, self.argc
+        )?;
+        for arg in self.args.iter().take(usize::from(self.argc)) {
+            write!(f, ", arg:{arg}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Argument for CallMathOperands {
+    fn encode(self, bytes: &mut Vec<u8>) {
+        self.dst.encode(bytes);
+        self.callee.encode(bytes);
+        self.this.encode(bytes);
+        self.function.encode(bytes);
+        self.argc.encode(bytes);
+        self.args[0].encode(bytes);
+        self.args[1].encode(bytes);
+        self.args[2].encode(bytes);
+    }
+
+    fn decode(bytes: &[u8], pos: usize) -> (Self, usize) {
+        let (dst, pos) = RegisterOperand::decode(bytes, pos);
+        let (callee, pos) = RegisterOperand::decode(bytes, pos);
+        let (this, pos) = RegisterOperand::decode(bytes, pos);
+        let (function, pos) = u8::decode(bytes, pos);
+        let (count, pos) = u8::decode(bytes, pos);
+        let (arg0, pos) = RegisterOperand::decode(bytes, pos);
+        let (arg1, pos) = RegisterOperand::decode(bytes, pos);
+        let (arg2, pos) = RegisterOperand::decode(bytes, pos);
+        (
+            Self {
+                dst,
+                callee,
+                this,
+                function,
+                argc: count,
+                args: [arg0, arg1, arg2],
+            },
+            pos,
+        )
+    }
+}
+
+/// `PrepareMath` implements the Opcode Operation for `Opcode::PrepareMath`.
+///
+/// Operation:
+///  - Runs where the generic call reads `Math.<name>`, before the arguments. When the
+///    realm's `Math` is pristine, stores `undefined` in `this`: the callee is the
+///    intrinsic and `CallMath` calls it directly. Otherwise gets the `Math` binding
+///    into `this` and its property into `callee`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrepareMath;
+
+impl Operation for PrepareMath {
+    const NAME: &'static str = "PrepareMath";
+    const INSTRUCTION: &'static str = "INST - PrepareMath";
+    const COST: u8 = 2;
+}
+
+impl PrepareMath {
+    #[inline(always)]
+    pub(super) fn operation(operands: PrepareMathOperands, context: &mut Context) -> JsResult<()> {
+        if context.realm().math_pristine() && context.global_binding_is_static() {
+            context
+                .vm
+                .set_register(operands.this.into(), JsValue::undefined());
+            return Ok(());
+        }
+        prepare_math_slow(operands, context)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn prepare_math_slow(operands: PrepareMathOperands, context: &mut Context) -> JsResult<()> {
+    let base = load_math_binding(operands.binding_index, context)?;
+    let object = base.base_class(context)?;
+    let key = PropertyKey::from(Math::pure_name(operands.function));
+    let callee = object.__get__(
+        &key,
+        base.clone(),
+        &mut InternalMethodPropertyContext::new(context),
+    )?;
+    // `base_class` threw for null and undefined, so `this` is never `undefined` here.
+    context.vm.set_register(operands.this.into(), base);
+    context.vm.set_register(operands.callee.into(), callee);
+    Ok(())
+}
+
+/// `CallMath` implements the Opcode Operation for `Opcode::CallMath`.
+///
+/// Operation:
+///  - Calls the intrinsic pure `Math` function when `PrepareMath` found `Math`
+///    pristine, otherwise calls `callee` with `this`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallMath;
+
+impl Operation for CallMath {
+    const NAME: &'static str = "CallMath";
+    const INSTRUCTION: &'static str = "INST - CallMath";
+    const COST: u8 = 15;
+}
+
+impl CallMath {
+    #[inline(always)]
+    pub(super) fn operation(operands: CallMathOperands, context: &mut Context) -> JsResult<()> {
+        let live = usize::from(operands.argc);
+        assert!(live <= 3, "CallMath argument count");
+
+        let mut stored = [
+            JsValue::undefined(),
+            JsValue::undefined(),
+            JsValue::undefined(),
+        ];
+        for (slot, reg) in stored.iter_mut().zip(operands.args).take(live) {
+            *slot = context.vm.get_register(reg.into()).clone();
+        }
+        let args = &stored[..live];
+
+        // The callee is the intrinsic, which ignores `this` and converts its own
+        // arguments, so calling it here is the call the generic sequence makes.
+        let value = if context.vm.get_register(operands.this.into()).is_undefined() {
+            Math::call_pure(operands.function, args, context)?
+        } else {
+            call_math_slow(operands, args, context)?
+        };
+        context.vm.set_register(operands.dst.into(), value);
+        Ok(())
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn call_math_slow(
+    operands: CallMathOperands,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let this = context.vm.get_register(operands.this.into()).clone();
+    let callee = context.vm.get_register(operands.callee.into()).clone();
+    let Some(function) = callee.as_callable() else {
+        return Err(JsNativeError::typ()
+            .with_message("not a callable function")
+            .into());
+    };
+    function.call(&this, args, context)
+}
+
+fn load_math_binding(index: IndexOperand, context: &mut Context) -> JsResult<JsValue> {
+    let slot = usize::from(index);
+    let is_global = context.vm.frame().code_block.bindings[slot].is_global();
+    if is_global && context.global_binding_is_static() {
+        return get_global_math(context);
+    }
+
+    let mut locator = context.vm.frame().code_block.bindings[slot].clone();
+    context.find_runtime_binding(&mut locator)?;
+    if locator.is_global() {
+        return get_global_math(context);
+    }
+
+    context.get_binding(&locator)?.ok_or_else(|| {
+        let name = locator.name().to_std_string_escaped();
+        JsNativeError::reference()
+            .with_message(format!("{name} is not defined"))
+            .into()
+    })
+}
+
+fn get_global_math(context: &mut Context) -> JsResult<JsValue> {
+    let object = context.global_object();
+    let key = PropertyKey::from(StaticJsStrings::MATH);
+    let property_context = &mut InternalMethodPropertyContext::new(context);
+    match object.__try_get__(&key, object.clone().into(), property_context)? {
+        Some(result) => Ok(result),
+        None => Err(JsNativeError::reference()
+            .with_message(format!("{key} is not defined"))
+            .into()),
+    }
 }
