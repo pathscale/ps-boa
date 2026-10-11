@@ -38,6 +38,8 @@ Internally, strings can be represented in multiple forms, identified by the `JsS
    Created when taking a substring (slice) of an existing `JsString`. Instead of copying the data, a `SliceString` holds a reference to the original (owned) `JsString`, the start/end bounds (`JsStr<'static>`), its own `vtable`, and a reference count. This avoids copying memory for substring operations.
 3. **`StaticString` (`JsStringKind::Static`)**
    A static string representation that requires no allocation or reference counting. Boa defines a large number of common JavaScript strings (e.g., `"length"`, `"name"`, `"prototype"`, widely used symbols and built-in object names) at compile-time in `core/string/src/common.rs`. When creating a new `JsString`, Boa checks if it exists in the interned static array. If so, it returns a pointer to the `StaticString` instead of allocating heap memory.
+4. **`SharedJsStr` (`JsStringKind::Latin1Shared` / `JsStringKind::Utf16Shared`)**
+   A thread-shareable string. The code units are Latin1 or UTF-16, as in a sequence string, and the header is reference counted with `std::sync::Arc` rather than `Cell<usize>`. `SharedJsStr` is `Send + Sync`. `JsString::from_shared` builds a `JsString` that points at the same `Arc` and does not copy the units. Cloning or dropping that `JsString` adjusts the `Arc` strong count. `as_str` borrows the units.
 
 ## Reference Counting
 
@@ -53,3 +55,5 @@ pub(crate) struct SequenceString<T: InternalStringType> {
 ```
 
 Since the `JsString` `ptr` points directly at the structure that contains the `vtable`, `refcount`, and string data all in the same allocation, the engine achieves similar functionality to `std::rc::Rc` but completely avoids the length metadata overhead associated with the `Rc` fat pointer structure. The length configuration is cached cleanly on the `vtable` structure.
+
+`SharedJsStr` uses `std::sync::Arc` instead of `Cell<usize>`. The `JsString` pointer still addresses a header whose first field is the vtable. The code units are a buffer owned by that `Arc`, so cloning the string does not copy them, and the value can move to another thread before `JsString::from_shared` turns it back into a `JsString`.

@@ -12,6 +12,9 @@ pub(crate) use slice::SliceString;
 pub(crate) mod r#static;
 pub use r#static::StaticString;
 
+pub(crate) mod shared;
+pub use shared::SharedJsStr;
+
 /// Embedded vtable for `JsString` operations. This is stored directly in each string
 /// struct (not as a reference) to eliminate one level of indirection on hot paths.
 #[derive(Debug, Copy, Clone)]
