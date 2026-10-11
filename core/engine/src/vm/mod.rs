@@ -110,6 +110,14 @@ pub struct Vm {
 
     pub(crate) shadow_stack: ShadowStack,
 
+    /// Baseline code activations on the Rust stack.
+    #[cfg(feature = "jit")]
+    pub(crate) jit_depth: u32,
+
+    /// A completion baseline code hands to the run loop that entered it.
+    #[cfg(feature = "jit")]
+    pub(crate) jit_break: Option<CompletionRecord>,
+
     #[cfg(feature = "trace")]
     pub(crate) trace: bool,
     #[cfg(feature = "trace")]
@@ -512,6 +520,10 @@ impl Vm {
             native_active_function: None,
             native_constructor_receiver: None,
             host_call_depth: 0,
+            #[cfg(feature = "jit")]
+            jit_depth: 0,
+            #[cfg(feature = "jit")]
+            jit_break: None,
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
             trace: false,
@@ -1090,14 +1102,24 @@ impl Context {
         let _execution = self.enter_execution_time_limit();
         let mut runtime_budget: u32 = budget;
 
-        while let Some(byte) = self
-            .vm
-            .frame()
-            .code_block
-            .bytecode
-            .bytes
-            .get(self.vm.frame().pc as usize)
-        {
+        loop {
+            let Some(byte) = self
+                .vm
+                .frame()
+                .code_block
+                .bytecode
+                .bytes
+                .get(self.vm.frame().pc as usize)
+            else {
+                #[cfg(feature = "jit")]
+                if self.vm.frame().pc == jit::ENTRY {
+                    match jit::run_frame(self) {
+                        ControlFlow::Continue(()) => continue,
+                        ControlFlow::Break(value) => return value,
+                    }
+                }
+                break;
+            };
             let opcode = Opcode::decode(*byte);
 
             match self.execute_one(
@@ -1124,14 +1146,24 @@ impl Context {
 
     pub(crate) fn run(&mut self) -> CompletionRecord {
         let _execution = self.enter_execution_time_limit();
-        while let Some(byte) = self
-            .vm
-            .frame()
-            .code_block
-            .bytecode
-            .bytes
-            .get(self.vm.frame().pc as usize)
-        {
+        loop {
+            let Some(byte) = self
+                .vm
+                .frame()
+                .code_block
+                .bytecode
+                .bytes
+                .get(self.vm.frame().pc as usize)
+            else {
+                #[cfg(feature = "jit")]
+                if self.vm.frame().pc == jit::ENTRY {
+                    match jit::run_frame(self) {
+                        ControlFlow::Continue(()) => continue,
+                        ControlFlow::Break(value) => return value,
+                    }
+                }
+                break;
+            };
             let opcode = Opcode::decode(*byte);
 
             match self.execute_one(
@@ -1149,6 +1181,31 @@ impl Context {
         }
 
         CompletionRecord::Throw(JsError::from_native(JsNativeError::error()))
+    }
+
+    /// Runs frames until the frame count drops to `depth`, for baseline code waiting on a
+    /// call it made.
+    #[cfg(feature = "jit")]
+    pub(crate) fn run_nested(&mut self, depth: usize) -> ControlFlow<CompletionRecord> {
+        while self.vm.frames.len() > depth {
+            let frame = self.vm.frame();
+            let pc = frame.pc;
+            let Some(&byte) = frame.code_block.bytecode.bytes.get(pc as usize) else {
+                if pc == jit::ENTRY {
+                    jit::run_frame(self)?;
+                    continue;
+                }
+                return ControlFlow::Break(CompletionRecord::Throw(JsError::from_native(
+                    JsNativeError::error(),
+                )));
+            };
+            let opcode = Opcode::decode(byte);
+            self.execute_one(
+                |context, opcode| OPCODE_HANDLERS[opcode as usize](context, pc as usize),
+                opcode,
+            )?;
+        }
+        ControlFlow::Continue(())
     }
 
     /// Checks if we haven't exceeded the defined runtime limits.

@@ -5,16 +5,39 @@
 //! once. A later call whose arguments are all Numbers, and whose argument count equals
 //! the formal parameter count, runs the machine code and pushes its result instead of
 //! pushing a frame. Anything else runs in the interpreter.
+//!
+//! A function that is not a numeric leaf gets baseline code instead: one helper call per
+//! instruction and native branches between them, working on the interpreter's own frame.
+//! [`function_call`](crate::builtins::function) leaves such a frame at [`ENTRY`], and the run loop
+//! enters the code there. The code hands back to the interpreter whenever the frame does
+//! something it does not follow, which is always a valid place to resume.
 
 use std::cell::Cell;
+use std::ops::ControlFlow;
 
 use boa_jit::NumericLeafFn;
+use boa_jit::baseline::{self, BaselineFn, status};
 use boa_jit::ir::{BinOp, CmpOp, Insn, MathFn, Op, Rel, Unary, When};
 
 use crate::{
     Context, JsValue,
     builtins::function::OrdinaryFunction,
-    vm::{CodeBlock, opcode::Instruction},
+    error::RuntimeLimitError,
+    vm::{
+        CodeBlock, CompletionRecord,
+        opcode::{Instruction, OPCODE_HANDLERS, Opcode},
+    },
+};
+
+/// The `pc` of a frame whose baseline code has not started. No bytecode is this long.
+pub(crate) const ENTRY: u32 = u32::MAX;
+
+/// Baseline activations allowed on the Rust stack. Deeper calls run in the interpreter.
+const DEPTH_LIMIT: u32 = 200;
+
+const HELPERS: baseline::Helpers = baseline::Helpers {
+    step: step_helper,
+    branch: branch_helper,
 };
 
 /// Calls before a function is compiled.
@@ -41,6 +64,8 @@ enum JitState {
     Failed,
     /// Machine code, and whether it computes `Math.f` inline.
     Compiled(NumericLeafFn, bool),
+    /// Baseline code, entered through [`ENTRY`].
+    Baseline(BaselineFn),
 }
 
 /// Runs `code` as machine code when it is compiled and the call qualifies, leaving the
@@ -54,7 +79,7 @@ pub(crate) fn try_call(
     let code = &*function.code;
     let (compiled, uses_math) = match code.jit.state.get() {
         JitState::Compiled(compiled, uses_math) => (compiled, uses_math),
-        JitState::Failed => return false,
+        JitState::Failed | JitState::Baseline(_) => return false,
         JitState::Cold => {
             let calls = code.jit.calls.get().saturating_add(1);
             code.jit.calls.set(calls);
@@ -63,7 +88,14 @@ pub(crate) fn try_call(
             }
             // Recorded before compiling, so a failure is never retried.
             code.jit.state.set(JitState::Failed);
+            boa_jit::set_helpers(HELPERS);
             let Some((insns, uses_math)) = translate(code) else {
+                if baseline_enabled()
+                    && let Some(compiled) =
+                        translate_baseline(code).and_then(|insns| boa_jit::compile_baseline(&insns))
+                {
+                    code.jit.state.set(JitState::Baseline(compiled));
+                }
                 return false;
             };
             let Some(compiled) =
@@ -270,4 +302,175 @@ fn translate_op(instruction: &Instruction) -> Option<Op> {
         }
         _ => return None,
     })
+}
+
+/// Leaves a just-pushed frame at [`ENTRY`] when its code has baseline code.
+pub(crate) fn mark_entry(context: &mut Context) {
+    let frame = context.vm.frame_mut();
+    if matches!(frame.code_block.jit.state.get(), JitState::Baseline(_)) {
+        frame.pc = ENTRY;
+    }
+}
+
+/// Runs the top frame, which is at [`ENTRY`], as baseline code until it hands back.
+pub(crate) fn run_frame(context: &mut Context) -> ControlFlow<CompletionRecord> {
+    let frame = context.vm.frame_mut();
+    frame.pc = 0;
+    let JitState::Baseline(compiled) = frame.code_block.jit.state.get() else {
+        return ControlFlow::Continue(());
+    };
+    if context.vm.jit_depth >= DEPTH_LIMIT {
+        return ControlFlow::Continue(());
+    }
+    let Ok(depth) = u32::try_from(context.vm.frames.len()) else {
+        return ControlFlow::Continue(());
+    };
+    context.vm.jit_depth += 1;
+    // SAFETY: `compiled` was emitted on this thread for the top frame's code block, whose
+    // bytecode it addresses. It only passes `context` back to the helpers below.
+    let result = unsafe { compiled(std::ptr::from_mut(context).cast(), depth) };
+    context.vm.jit_depth -= 1;
+    if result == status::BREAK
+        && let Some(record) = context.vm.jit_break.take()
+    {
+        return ControlFlow::Break(record);
+    }
+    ControlFlow::Continue(())
+}
+
+/// Runs the handler for the instruction at `pc`, as the run loop would.
+fn run_instruction(context: &mut Context, pc: u32) -> ControlFlow<CompletionRecord> {
+    if context
+        .vm
+        .interrupt_flag
+        .as_ref()
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    {
+        return context.handle_error(RuntimeLimitError::Interrupted.into());
+    }
+    let Some(&byte) = context
+        .vm
+        .frame()
+        .code_block
+        .bytecode
+        .bytes
+        .get(pc as usize)
+    else {
+        return ControlFlow::Continue(());
+    };
+    OPCODE_HANDLERS[Opcode::decode(byte) as usize](context, pc as usize)
+}
+
+/// Where the frame went after an instruction, as a [`status`] value. A frame the
+/// instruction pushed is run to completion here first, so the code continues after a call.
+fn settle(
+    context: &mut Context,
+    flow: ControlFlow<CompletionRecord>,
+    next: u32,
+    target: u32,
+    depth: u32,
+) -> u32 {
+    let mut flow = flow;
+    let depth = depth as usize;
+    if flow.is_continue() && context.vm.frames.len() > depth {
+        if context.vm.jit_depth >= DEPTH_LIMIT {
+            return status::EXIT;
+        }
+        flow = context.run_nested(depth);
+    }
+    if let ControlFlow::Break(record) = flow {
+        context.vm.jit_break = Some(record);
+        return status::BREAK;
+    }
+    if context.vm.frames.len() != depth {
+        return status::EXIT;
+    }
+    let pc = context.vm.frame().pc;
+    if pc == next {
+        status::NEXT
+    } else if pc == target {
+        status::TAKEN
+    } else {
+        status::EXIT
+    }
+}
+
+unsafe extern "C" fn step_helper(
+    context: *mut std::ffi::c_void,
+    pc: u32,
+    next: u32,
+    depth: u32,
+) -> u32 {
+    // SAFETY: baseline code passes back the context `run_frame` gave it, which is live and
+    // not otherwise borrowed while the code runs.
+    let context = unsafe { &mut *context.cast::<Context>() };
+    let flow = run_instruction(context, pc);
+    settle(context, flow, next, ENTRY, depth)
+}
+
+unsafe extern "C" fn branch_helper(
+    context: *mut std::ffi::c_void,
+    pc: u32,
+    next: u32,
+    target: u32,
+    depth: u32,
+) -> u32 {
+    // SAFETY: as in `step_helper`.
+    let context = unsafe { &mut *context.cast::<Context>() };
+    let flow = run_instruction(context, pc);
+    settle(context, flow, next, target, depth)
+}
+
+/// Baseline instructions for `code`, or `None` when it is not an ordinary function.
+fn translate_baseline(code: &CodeBlock) -> Option<Vec<baseline::Insn>> {
+    if !code.is_ordinary() {
+        return None;
+    }
+    let bytes = &code.bytecode.bytes;
+    let mut insns = Vec::new();
+    let mut pc = 0;
+    while pc < bytes.len() {
+        let (instruction, next) = code.bytecode.next_instruction(pc);
+        let at = u32::try_from(pc).ok()?;
+        let after = u32::try_from(next).ok()?;
+        let branch = |target: u32| baseline::Insn::Branch {
+            pc: at,
+            next: after,
+            target,
+        };
+        insns.push(match instruction {
+            Instruction::Jump { address } => baseline::Insn::Jump {
+                pc: at,
+                target: u32::from(address),
+            },
+            Instruction::JumpIfTrue { address, .. }
+            | Instruction::JumpIfFalse { address, .. }
+            | Instruction::JumpIfNotUndefined { address, .. }
+            | Instruction::JumpIfNullOrUndefined { address, .. }
+            | Instruction::JumpIfNotLessThan { address, .. }
+            | Instruction::JumpIfNotLessThanOrEqual { address, .. }
+            | Instruction::JumpIfNotGreaterThan { address, .. }
+            | Instruction::JumpIfNotGreaterThanOrEqual { address, .. }
+            | Instruction::JumpIfNotEqual { address, .. }
+            | Instruction::LogicalAnd { address, .. }
+            | Instruction::LogicalOr { address, .. }
+            | Instruction::Coalesce { address, .. }
+            | Instruction::Case { address, .. }
+            | Instruction::TemplateLookup { address, .. } => branch(u32::from(address)),
+            _ => baseline::Insn::Step {
+                pc: at,
+                next: after,
+            },
+        });
+        pc = next;
+    }
+    Some(insns)
+}
+
+/// Baseline code is on unless `BOA_JIT_BASELINE=0` is set.
+fn baseline_enabled() -> bool {
+    thread_local! {
+        static ENABLED: bool = std::env::var_os("BOA_JIT_BASELINE").is_none_or(|value| value != "0");
+    }
+    ENABLED.with(|enabled| *enabled)
 }
