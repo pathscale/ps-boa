@@ -2,6 +2,9 @@ use arrayvec::ArrayVec;
 
 use crate::{JsValue, vm::Stack};
 
+// The inline variant is the point: it lives on the native call frame so
+// calls with up to eight arguments never allocate.
+#[allow(variant_size_differences)]
 enum Arguments {
     Few(ArrayVec<JsValue, 8>),
     Many(Vec<JsValue>),
