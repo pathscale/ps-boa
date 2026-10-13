@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: boa
+          persist-credentials: false
 
       # Install Rust toolchain
       - name: Install Rust toolchain
@@ -41,6 +42,7 @@ jobs:
           repository: boa-dev/data
           token: ${{ secrets.DATA_PAT }}
           path: data
+          persist-credentials: false
 
       # Run the Test262 test suite
       - name: Run the test262 test suite
