@@ -29,6 +29,7 @@ use std::{
     cell::{Cell, RefCell},
     mem,
     ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 pub use crate::trace::{Finalize, Trace, Tracer};
@@ -42,6 +43,10 @@ type EphemeronPointer = NonNull<dyn ErasedEphemeronBox>;
 type ErasedWeakMapBoxPointer = NonNull<dyn ErasedWeakMapBox>;
 
 thread_local!(static GC_DROPPING: Cell<bool> = const { Cell::new(false) });
+
+/// How many threads currently hold a `DropGuard`. While it is zero no thread is sweeping, so
+/// `finalizer_safe` can answer without the thread-local lookup on every `Gc` drop.
+static GC_DROPPING_THREADS: AtomicUsize = AtomicUsize::new(0);
 thread_local!(static BOA_GC: RefCell<BoaGc> = RefCell::new( BoaGc {
     config: GcConfig::default(),
     runtime: GcRuntimeData::default(),
@@ -102,6 +107,7 @@ struct DropGuard;
 
 impl DropGuard {
     fn new() -> Self {
+        GC_DROPPING_THREADS.fetch_add(1, Ordering::Relaxed);
         GC_DROPPING.with(|dropping| dropping.set(true));
         Self
     }
@@ -110,6 +116,7 @@ impl DropGuard {
 impl Drop for DropGuard {
     fn drop(&mut self) {
         GC_DROPPING.with(|dropping| dropping.set(false));
+        GC_DROPPING_THREADS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -117,7 +124,9 @@ impl Drop for DropGuard {
 #[must_use]
 #[inline]
 pub fn finalizer_safe() -> bool {
-    GC_DROPPING.with(|dropping| !dropping.get())
+    // A thread sees its own increment in program order, so a zero here means this thread is not
+    // inside a `DropGuard`, whatever other threads are doing.
+    GC_DROPPING_THREADS.load(Ordering::Relaxed) == 0 || GC_DROPPING.with(|dropping| !dropping.get())
 }
 
 /// The Allocator handles allocation of garbage collected values.
