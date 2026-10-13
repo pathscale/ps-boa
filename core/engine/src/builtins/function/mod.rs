@@ -993,7 +993,6 @@ pub(crate) fn function_call(
     let function = function_object
         .downcast_ref::<OrdinaryFunction>()
         .js_expect("not a function")?;
-    let realm = function.realm().clone();
 
     if function.code.is_class_constructor() {
         debug_assert!(
@@ -1002,7 +1001,7 @@ pub(crate) fn function_call(
         );
         return Err(JsNativeError::typ()
             .with_message("class constructor cannot be invoked without 'new'")
-            .with_realm(realm)
+            .with_realm(function.realm().clone())
             .into());
     }
 
@@ -1011,6 +1010,7 @@ pub(crate) fn function_call(
         return Ok(CallValue::Complete);
     }
 
+    let realm = function.realm().clone();
     let code = function.code.clone();
     let environments = function.environments.clone();
     let script_or_module = function.script_or_module.clone();
@@ -1033,7 +1033,6 @@ pub(crate) fn function_call(
     }
 
     context.vm.push_frame(frame);
-    context.vm.set_return_value(JsValue::undefined());
 
     let context = context.context();
 
@@ -1042,7 +1041,7 @@ pub(crate) fn function_call(
         ThisBindingStatus::Lexical
     } else {
         let this = context.vm.stack.get_this(context.vm.frame());
-        if context.vm.frame().code_block.strict() {
+        if context.vm.frame().code_block.strict() || this.is_object() {
             context.vm.frame_mut().flags |= CallFrameFlags::THIS_VALUE_CACHED;
             ThisBindingStatus::Initialized(this)
         } else if this.is_null_or_undefined() {
@@ -1173,7 +1172,6 @@ fn function_construct(
     }
 
     context.vm.push_frame(frame);
-    context.vm.set_return_value(JsValue::undefined());
 
     let mut last_env = 0;
 

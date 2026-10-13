@@ -5,7 +5,6 @@
 
 use std::cell::RefCell;
 
-use arrayvec::ArrayVec;
 use boa_gc::{Finalize, Gc, Trace, custom_trace};
 use boa_string::JsString;
 
@@ -26,7 +25,10 @@ use crate::{
     realm::Realm,
 };
 
+mod arguments;
 mod continuation;
+
+use arguments::NativeCall;
 
 pub(crate) use continuation::{CoroutineBranch, CoroutineState, NativeCoroutine};
 
@@ -331,35 +333,30 @@ pub(crate) fn native_function_call(
     argument_count: usize,
     context: &mut InternalMethodCallContext<'_>,
 ) -> JsResult<CallValue> {
-    let mut few = ArrayVec::<JsValue, 8>::new();
-    let many;
-    let args: &[JsValue] = if argument_count <= few.capacity() {
-        context
-            .vm
-            .stack
-            .calling_convention_pop_arguments_into(argument_count, &mut few);
-        &few
-    } else {
-        many = context
-            .vm
-            .stack
-            .calling_convention_pop_arguments(argument_count);
-        &many
-    };
-    let _func = context.vm.stack.pop();
-    let this = context.vm.stack.pop();
+    let call = NativeCall::new(&mut context.vm.stack, argument_count);
+    let result = native_function_call_with_args(obj, call.this(), call.arguments(), context)?;
+    context.vm.stack.push(result);
+    Ok(CallValue::Complete)
+}
 
+/// Calls a native function using arguments already owned by the caller.
+///
+/// This shares the native calling semantics with the VM entry point without
+/// copying the calling convention through the VM stack.
+pub(crate) fn native_function_call_with_args(
+    obj: &JsObject,
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut InternalMethodCallContext<'_>,
+) -> JsResult<JsValue> {
     // An intrinsic Math function on numbers runs no user code and cannot throw, so it needs no
     // backtrace entry, realm switch or active function.
     if args.iter().all(JsValue::is_number)
         && let Some(math) = obj
             .downcast_ref::<NativeFunctionObject>()
             .filter(|native| Math::is_pure_on_numbers(&native.f))
-            .map(|native| native.f.clone())
     {
-        let result = math.call(&this, args, context)?;
-        context.vm.stack.push(result);
-        return Ok(CallValue::Complete);
+        return math.f.call(this, args, context);
     }
 
     // We technically don't need this since native functions don't push any new frames to the
@@ -390,12 +387,12 @@ pub(crate) fn native_function_call(
     context.vm.native_active_function = Some(this_function_object);
 
     let result = if constructor.is_some() {
-        let outer = context.vm.native_constructor_receiver.replace(this);
+        let outer = context.vm.native_constructor_receiver.replace(this.clone());
         let result = function.call(&JsValue::undefined(), args, context);
         context.vm.native_constructor_receiver = outer;
         result
     } else {
-        function.call(&this, args, context)
+        function.call(this, args, context)
     }
     .map_err(|err| err.inject_realm(context.realm().clone()));
 
@@ -404,9 +401,7 @@ pub(crate) fn native_function_call(
 
     context.vm.shadow_stack.pop();
 
-    context.vm.stack.push(result?);
-
-    Ok(CallValue::Complete)
+    result
 }
 
 /// Construct an instance of this object with the specified arguments.
@@ -448,15 +443,10 @@ fn native_function_construct(
     context.vm.native_active_function = Some(this_function_object);
 
     let new_target = context.vm.stack.pop();
-    let args = context
-        .vm
-        .stack
-        .calling_convention_pop_arguments(argument_count);
-    let _func = context.vm.stack.pop();
-    let _this = context.vm.stack.pop();
+    let call = NativeCall::new(&mut context.vm.stack, argument_count);
 
     let result = function
-        .call(&new_target, &args, context)
+        .call(&new_target, call.arguments(), context)
         .map_err(|err| err.inject_realm(context.realm().clone()))
         .and_then(|v| match v.variant() {
             JsVariant::Object(o) => Ok(o.clone()),

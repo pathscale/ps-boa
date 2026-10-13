@@ -157,6 +157,7 @@ impl Stack {
     }
 
     /// Truncate the stack to the given frame.
+    #[inline]
     pub(crate) fn truncate_to_frame(&mut self, frame: &CallFrame) {
         for value in self.stack.drain(frame.frame_pointer()..) {
             // SAFETY: the interpreter never runs inside a collection sweep.
@@ -179,15 +180,14 @@ impl Stack {
 
     /// Set the `this` value of the given frame.
     pub(crate) fn set_this(&mut self, frame: &CallFrame, this: JsValue) {
-        self.stack[frame.this_index()] = this;
+        let old = std::mem::replace(&mut self.stack[frame.this_index()], this);
+        // SAFETY: the interpreter never runs inside a collection sweep.
+        unsafe { old.release_outside_collection() };
     }
 
     /// Get the function object of the given frame.
     pub(crate) fn get_function(&self, frame: &CallFrame) -> Option<JsObject> {
-        if let Some(object) = self.stack[frame.function_index()].as_object() {
-            return Some(object.clone());
-        }
-        None
+        self.stack[frame.function_index()].as_object()
     }
 
     /// Get the function arguments of the given frame.
@@ -196,8 +196,13 @@ impl Stack {
     }
 
     /// Get a single function argument of the given frame by index.
+    #[inline]
     pub(crate) fn get_argument(&self, frame: &CallFrame, index: usize) -> Option<&JsValue> {
-        self.get_arguments(frame).get(index)
+        if index >= frame.argument_count as usize {
+            return None;
+        }
+        let start = frame.fp as usize + CallFrame::FUNCTION_PROLOGUE as usize;
+        self.stack.get(start + index)
     }
 
     /// Get the rest arguments of the given frame.
@@ -288,8 +293,24 @@ impl Stack {
         self.stack.push(result);
     }
 
+    /// Push an entire call after reserving space for its prologue and arguments.
+    #[inline]
+    pub(crate) fn calling_convention_push_call(
+        &mut self,
+        this: JsValue,
+        function: JsValue,
+        values: &[JsValue],
+    ) {
+        self.stack
+            .reserve(CallFrame::FUNCTION_PROLOGUE as usize + values.len());
+        self.stack.push(this);
+        self.stack.push(function);
+        self.stack.extend_from_slice(values);
+    }
+
     /// Push the function arguments according to the calling convention.
     /// This will push the given values onto the stack.
+    #[inline]
     pub(crate) fn calling_convention_push_arguments(&mut self, values: &[JsValue]) {
         self.stack.extend_from_slice(values);
     }
@@ -428,6 +449,13 @@ impl Stack {
             string.push(']');
         }
         string
+    }
+}
+
+impl Extend<JsValue> for Stack {
+    #[inline]
+    fn extend<T: IntoIterator<Item = JsValue>>(&mut self, values: T) {
+        self.stack.extend(values);
     }
 }
 
@@ -648,7 +676,7 @@ impl Vm {
 
     pub(crate) fn push_frame(&mut self, mut frame: CallFrame) {
         // Each function call starts with an implicit `undefined` return value.
-        self.return_value = JsValue::undefined();
+        self.set_return_value(JsValue::undefined());
 
         // NOTE: We need to check if we already pushed the registers,
         //       since generator-like functions push the same call
@@ -727,8 +755,11 @@ impl Vm {
         self.return_value.clone()
     }
 
+    #[inline]
     pub(crate) fn set_return_value(&mut self, value: JsValue) {
-        self.return_value = value;
+        let old = std::mem::replace(&mut self.return_value, value);
+        // SAFETY: the interpreter never runs inside a collection sweep.
+        unsafe { old.release_outside_collection() };
     }
 
     pub(crate) fn take_return_value(&mut self) -> JsValue {
@@ -939,6 +970,7 @@ impl Context {
         self.handle_throw()
     }
 
+    #[inline]
     fn handle_return(&mut self) -> ControlFlow<CompletionRecord> {
         let exit_early = self.vm.frame().exit_early();
         let frame = self.vm.frames.last().expect("frame must exist");

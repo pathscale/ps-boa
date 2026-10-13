@@ -196,7 +196,7 @@ impl Call {
             return Err(Self::handle_not_callable());
         };
 
-        object.__call__(argument_count.into()).resolve(context)?;
+        object.__call_resolve(argument_count.into(), context)?;
 
         Ok(())
     }
@@ -227,17 +227,11 @@ impl CallSpread {
         let arguments_array_object = arguments_array
             .as_object()
             .js_expect("arguments array in call spread function must be an object")?;
-        let arguments = arguments_array_object
+        let argument_count = arguments_array_object
             .borrow()
             .properties()
-            .to_dense_indexed_properties()
+            .append_dense_indexed_properties(&mut context.vm.stack)
             .js_expect("arguments array in call spread function must be dense")?;
-
-        let argument_count = arguments.len();
-        context
-            .vm
-            .stack
-            .calling_convention_push_arguments(&arguments);
 
         let func = context
             .vm
@@ -250,7 +244,7 @@ impl CallSpread {
                 .into());
         };
 
-        object.__call__(argument_count).resolve(context)?;
+        object.__call_resolve(argument_count, context)?;
         Ok(())
     }
 }

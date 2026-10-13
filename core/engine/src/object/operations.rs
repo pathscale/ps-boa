@@ -1,4 +1,4 @@
-use super::internal_methods::InternalMethodPropertyContext;
+use super::internal_methods::{InternalMethodCallContext, InternalMethodPropertyContext};
 use crate::js_error;
 use crate::value::JsVariant;
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
     },
     context::intrinsics::{StandardConstructor, StandardConstructors},
     error::JsNativeError,
-    native_function::NativeFunctionObject,
+    native_function::{NativeFunctionObject, native_function_call_with_args},
     object::{CONSTRUCTOR, JsObject, PROTOTYPE, PrivateElement, PrivateName},
     property::{PropertyDescriptor, PropertyDescriptorBuilder, PropertyKey, PropertyNameKind},
     realm::Realm,
@@ -444,14 +444,24 @@ impl JsObject {
         // NOTE(HalidOdat): For object's that are not callable we implement a special __call__ internal method
         //                  that throws on call.
 
-        context.vm.stack.push(this.clone()); // this
-        context.vm.stack.push(self.clone()); // func
+        if self.is::<NativeFunctionObject>() {
+            return native_function_call_with_args(
+                self,
+                this,
+                args,
+                &mut InternalMethodCallContext::new(context),
+            );
+        }
+
         let argument_count = args.len();
-        context.vm.stack.calling_convention_push_arguments(args);
+        context
+            .vm
+            .stack
+            .calling_convention_push_call(this.clone(), self.clone().into(), args);
 
         // 3. Return ? F.[[Call]](V, argumentsList).
         let frame_index = context.vm.frames.len();
-        if self.__call__(argument_count).resolve(context)? {
+        if self.__call_resolve(argument_count, context)? {
             return Ok(context.vm.stack.pop());
         }
 

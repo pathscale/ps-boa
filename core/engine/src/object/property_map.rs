@@ -828,6 +828,31 @@ impl PropertyMap {
         }
     }
 
+    /// Appends dense indexed values in argument order without a temporary vector.
+    ///
+    /// Numeric storage is converted exactly as in `to_dense_indexed_properties`.
+    /// Sparse storage leaves the destination unchanged.
+    pub(crate) fn append_dense_indexed_properties(
+        &self,
+        out: &mut impl Extend<JsValue>,
+    ) -> Option<usize> {
+        match &self.indexed_properties {
+            IndexedProperties::DenseI32(properties) => {
+                out.extend(properties.iter().copied().map(JsValue::from));
+                Some(properties.len())
+            }
+            IndexedProperties::DenseF64(properties) => {
+                out.extend(properties.iter().copied().map(JsValue::from));
+                Some(properties.len())
+            }
+            IndexedProperties::DenseElement(properties) => {
+                out.extend(properties.iter().cloned());
+                Some(properties.len())
+            }
+            IndexedProperties::SparseProperty(_) | IndexedProperties::SparseElement(_) => None,
+        }
+    }
+
     /// Returns the vec of dense indexed properties if they exist.
     pub(crate) fn dense_indexed_properties_mut(&mut self) -> Option<&mut ThinVec<JsValue>> {
         if let IndexedProperties::DenseElement(properties) = &mut self.indexed_properties {

@@ -342,6 +342,25 @@ impl JsObject {
         }
     }
 
+    /// Resolves `[[Call]]` without cloning the initial callee into a pending value.
+    ///
+    /// The calling convention must already be on the stack. Exotic calls still
+    /// resolve their pending targets through the same trampoline.
+    #[inline]
+    #[track_caller]
+    pub(crate) fn __call_resolve(
+        &self,
+        argument_count: usize,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        let call = (self.vtable().__call__)(
+            self,
+            argument_count,
+            &mut InternalMethodCallContext::new(context),
+        )?;
+        call.resolve(context)
+    }
+
     /// Internal method `[[Construct]]`
     ///
     /// The caller must ensure that the following values are pushed on the stack.
