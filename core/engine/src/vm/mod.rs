@@ -34,6 +34,7 @@ pub(crate) use {
     inline_cache::InlineCache,
 };
 
+pub use execution_budget::ExecutionScope;
 pub use runtime_limits::RuntimeLimits;
 pub use {
     call_frame::{CallFrame, GeneratorResumeKind},
@@ -46,6 +47,7 @@ pub(crate) use code_block::GlobalFunctionBinding;
 mod call_frame;
 mod code_block;
 mod completion_record;
+mod execution_budget;
 mod inline_cache;
 #[cfg(feature = "jit")]
 pub(crate) mod jit;
@@ -89,6 +91,7 @@ pub struct Vm {
     pub(crate) runtime_limits: RuntimeLimits,
     /// Host cancellation shared with the context's owning worker.
     pub(crate) interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) execution_budget: std::sync::Arc<execution_budget::ExecutionBudget>,
 
     /// This is used to assign a native (rust) function as the active function,
     /// because we don't push a frame for them.
@@ -505,6 +508,7 @@ impl Vm {
             pending_exception: None,
             runtime_limits: RuntimeLimits::default(),
             interrupt_flag: None,
+            execution_budget: std::sync::Arc::new(execution_budget::ExecutionBudget::default()),
             native_active_function: None,
             native_constructor_receiver: None,
             host_call_depth: 0,
@@ -867,6 +871,27 @@ impl Context {
         self.vm.interrupt_flag = Some(flag);
     }
 
+    /// Configure wall-time cancellation for subsequent execution boundaries.
+    ///
+    /// Disabled by default. A positive duration interrupts runaway execution
+    /// with an uncatchable engine error. Nested VM entries share a deadline.
+    /// Native Rust work can only be interrupted when control returns to the VM.
+    pub fn set_execution_time_limit(&mut self, duration: Option<std::time::Duration>) {
+        self.vm.execution_budget.set_duration(duration);
+    }
+
+    /// Retain a deadline across several VM calls belonging to one host task.
+    ///
+    /// Ordinary VM entry points also enter a scope automatically. A host scope
+    /// prevents successive callbacks from each receiving a fresh time limit.
+    pub fn enter_execution_time_limit(&self) -> ExecutionScope {
+        self.vm.execution_budget.begin()
+    }
+
+    pub(crate) fn execution_time_limit_exceeded(&self) -> bool {
+        self.vm.execution_budget.expired()
+    }
+
     fn execute_instruction<F>(&mut self, f: F, opcode: Opcode) -> ControlFlow<CompletionRecord>
     where
         F: FnOnce(&mut Context, Opcode) -> ControlFlow<CompletionRecord>,
@@ -883,6 +908,7 @@ impl Context {
             .interrupt_flag
             .as_ref()
             .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            || self.vm.execution_budget.should_interrupt()
         {
             return self.handle_error(RuntimeLimitError::Interrupted.into());
         }
@@ -1061,6 +1087,7 @@ impl Context {
     /// "clock cycles" have passed.
     #[allow(clippy::future_not_send)]
     pub(crate) async fn run_async_with_budget(&mut self, budget: u32) -> CompletionRecord {
+        let _execution = self.enter_execution_time_limit();
         let mut runtime_budget: u32 = budget;
 
         while let Some(byte) = self
@@ -1096,6 +1123,7 @@ impl Context {
     }
 
     pub(crate) fn run(&mut self) -> CompletionRecord {
+        let _execution = self.enter_execution_time_limit();
         while let Some(byte) = self
             .vm
             .frame()

@@ -911,11 +911,12 @@ impl SimpleJobExecutor {
     /// Runs jobs until the budget expires between jobs.
     ///
     /// Unstarted jobs remain queued in their original order. A single job
-    /// cannot be preempted. Native async jobs already being polled must finish
-    /// before this call returns: their futures borrow the context, so dropping
-    /// them at a slice boundary would cancel work. Promise jobs continue to
-    /// run while those futures are pending, retaining the ordinary executor's
-    /// ability to resolve promises awaited by native async jobs.
+    /// runs to completion unless the context's hard execution limit interrupts
+    /// it. Native async jobs already being polled must finish before a soft
+    /// slice returns: their futures borrow the context, so dropping them at a
+    /// slice boundary would cancel work. Promise jobs continue to run while
+    /// those futures are pending. Hard execution expiry cancels the drain,
+    /// including its pending native futures.
     ///
     /// Calling `run_jobs` without this method retains the unbounded drain.
     pub fn run_jobs_with_budget(
@@ -1019,9 +1020,15 @@ impl JobExecutor for SimpleJobExecutor {
     where
         Self: Sized,
     {
+        let _execution = context.borrow().enter_execution_time_limit();
         let mut group = FutureGroup::new();
         let mut fr_group = FutureGroup::new();
         loop {
+            if context.borrow().execution_time_limit_exceeded() {
+                self.clear();
+                return Err(crate::error::RuntimeLimitError::Interrupted.into());
+            }
+
             if self.stop.load(Ordering::Relaxed) {
                 self.stop.store(false, Ordering::Relaxed);
                 self.clear();

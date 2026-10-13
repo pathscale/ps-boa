@@ -34,6 +34,7 @@ license = "Unlicense OR MIT"
 description = "Boa is a Javascript lexer, parser and compiler written in Rust. Currently, it has support for some of the language."
 
 [workspace.dependencies]
+nagoya = { version = "^0.1.14" }
 
 # Repo Crates
 boa_ast = { package = "ps-boa-ast", version = "^1.1.2", path = "core/ast" }
