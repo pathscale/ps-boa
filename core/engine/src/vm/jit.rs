@@ -369,6 +369,7 @@ fn interrupt_pending(context: &Context) -> bool {
         .interrupt_flag
         .as_ref()
         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        || context.vm.execution_budget.should_interrupt()
 }
 
 #[cold]
