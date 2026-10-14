@@ -19,7 +19,7 @@ pub(super) enum SemicolonResult<'s> {
     NotFound(&'s Token),
 }
 
-const PARSER_RECURSION_LIMIT: usize = 128;
+const PARSER_RECURSION_LIMIT: usize = 256;
 
 #[derive(Debug)]
 pub(super) struct ParserDepthGuard {
