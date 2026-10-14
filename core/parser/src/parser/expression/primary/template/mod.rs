@@ -63,6 +63,7 @@ where
     type Output = literal::TemplateLiteral;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         let mut elements = vec![
             TemplateElement::String(self.first),
             TemplateElement::Expr(

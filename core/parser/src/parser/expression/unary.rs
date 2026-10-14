@@ -62,6 +62,7 @@ where
     type Output = FormalParameterListOrExpression;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         let tok = cursor.peek(0, interner).or_abrupt()?;
         let token_start = tok.span().start();
         match tok.kind() {

@@ -10,6 +10,7 @@ use crate::{
 use boa_ast::{LinearPosition, PositionGroup, Punctuator, Spanned};
 use boa_interner::Interner;
 use buffered_lexer::BufferedLexer;
+use std::{cell::Cell, rc::Rc};
 
 /// The result of a peek for a semicolon.
 #[derive(Debug)]
@@ -18,12 +19,26 @@ pub(super) enum SemicolonResult<'s> {
     NotFound(&'s Token),
 }
 
+const PARSER_RECURSION_LIMIT: usize = 256;
+
+#[derive(Debug)]
+pub(super) struct ParserDepthGuard {
+    depth: Rc<Cell<usize>>,
+}
+
+impl Drop for ParserDepthGuard {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get() - 1);
+    }
+}
+
 /// Token cursor.
 ///
 /// This internal structure gives basic testable operations to the parser.
 #[derive(Debug)]
 pub(super) struct Cursor<R> {
     buffered_lexer: BufferedLexer<R>,
+    recursion_depth: Rc<Cell<usize>>,
 
     /// Tracks if the cursor is in a arrow function declaration.
     arrow: bool,
@@ -47,11 +62,30 @@ where
     pub(super) fn new(reader: R) -> Self {
         Self {
             buffered_lexer: Lexer::new(reader).into(),
+            recursion_depth: Rc::new(Cell::new(0)),
             arrow: false,
             json_parse: false,
             identifier: 0,
             tagged_templates_count: 0,
         }
+    }
+
+    pub(super) fn enter_recursion(
+        &mut self,
+        interner: &mut Interner,
+    ) -> ParseResult<ParserDepthGuard> {
+        let depth = self.recursion_depth.get();
+        if depth >= PARSER_RECURSION_LIMIT {
+            let position = self
+                .peek(0, interner)?
+                .map_or(boa_ast::Position::new(1, 1), |token| token.span().start());
+            return Err(Error::general("parser nesting limit exceeded", position));
+        }
+
+        self.recursion_depth.set(depth + 1);
+        Ok(ParserDepthGuard {
+            depth: Rc::clone(&self.recursion_depth),
+        })
     }
 
     /// Sets the goal symbol of the cursor to `Module`.
