@@ -197,6 +197,10 @@ impl<'ast> boa_ast::visitor::Visitor<'ast> for JsonSourceVisitor<'_> {
 /// Host re-entries one `JSON.parse` call is charged while it runs.
 const JSON_PARSE_HOST_WEIGHT: usize = 16;
 
+/// Each JSON container nests the full expression parser, not just one host call.
+/// Leave headroom on 2 `MiB` threads even when an embedder raises the host limit.
+const JSON_PARSE_DEPTH_LIMIT: usize = 32;
+
 /// JavaScript `JSON` global object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Json;
@@ -285,6 +289,43 @@ impl Json {
         result
     }
 
+    /// Checks validated JSON before the recursive parser, AST visitor and compiler run.
+    fn check_parse_depth(text: &str, context: &Context) -> JsResult<()> {
+        let limit = JSON_PARSE_DEPTH_LIMIT.min(
+            context
+                .runtime_limits()
+                .host_recursion_limit()
+                .saturating_sub(context.vm.host_call_depth)
+                .saturating_sub(1),
+        );
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+        // Scan the text rather than serde_json::Value: duplicate object keys can
+        // discard a deeply nested value, but the expression parser still visits it.
+        for byte in text.bytes() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' if in_string => escaped = true,
+                b'"' => in_string = !in_string,
+                b'[' | b'{' if !in_string => {
+                    depth += 1;
+                    if depth > limit {
+                        return Err(JsNativeError::range()
+                            .with_message("Maximum call stack size exceeded")
+                            .into());
+                    }
+                }
+                b']' | b'}' if !in_string => depth -= 1,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn parse_inner(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
         // 1. Let jsonString be ? ToString(text).
         let json_string = args
@@ -300,6 +341,7 @@ impl Json {
         if let Err(e) = serde_json::from_str::<serde_json::Value>(&json_string) {
             return Err(JsNativeError::syntax().with_message(e.to_string()).into());
         }
+        Self::check_parse_depth(&json_string, context)?;
 
         // Check if a reviver is provided, to determine if we need source text tracking
         let has_reviver = args.get_or_undefined(1).is_callable();
