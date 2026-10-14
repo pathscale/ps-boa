@@ -194,6 +194,9 @@ impl<'ast> boa_ast::visitor::Visitor<'ast> for JsonSourceVisitor<'_> {
     }
 }
 
+/// Host re-entries one `JSON.parse` call is charged while it runs.
+const JSON_PARSE_HOST_WEIGHT: usize = 16;
+
 /// JavaScript `JSON` global object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Json;
@@ -261,7 +264,24 @@ impl Json {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-json.parse
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse
-    pub(crate) fn parse(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn parse(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+        // JSON.parse nests the parser, the bytecode compiler and `Context::run`
+        // on the Rust stack, and a reviver can call JSON.parse again. That costs
+        // far more native stack than one getter, so it is charged as several
+        // host re-entries: deep nesting throws a catchable RangeError instead of
+        // overflowing the thread stack.
+        context.vm.host_call_depth += JSON_PARSE_HOST_WEIGHT;
+        let result = context
+            .check_runtime_limits()
+            .and_then(|()| Self::parse_inner(this, args, context));
+        context.vm.host_call_depth = context
+            .vm
+            .host_call_depth
+            .saturating_sub(JSON_PARSE_HOST_WEIGHT);
+        result
+    }
+
+    fn parse_inner(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
         // 1. Let jsonString be ? ToString(text).
         let json_string = args
             .first()
@@ -390,6 +410,23 @@ impl Json {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-internalizejsonproperty
     fn internalize_json_property(
+        holder: &JsObject,
+        name: JsString,
+        reviver: &JsObject,
+        source_node: Option<&JsonNode>,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        // Each nested object or array recurses on the Rust stack. Count it as
+        // host re-entry so a deep value walked by a reviver is bounded too.
+        context.vm.host_call_depth += 1;
+        let result = context.check_runtime_limits().and_then(|()| {
+            Self::internalize_json_property_inner(holder, name, reviver, source_node, context)
+        });
+        context.vm.host_call_depth = context.vm.host_call_depth.saturating_sub(1);
+        result
+    }
+
+    fn internalize_json_property_inner(
         holder: &JsObject,
         name: JsString,
         reviver: &JsObject,
