@@ -390,3 +390,60 @@ fn json_parse_deep_value_with_reviver_throws_range_error() {
         "#}),
     ]);
 }
+
+#[test]
+fn json_parse_input_depth_is_bounded_before_parsing() {
+    run_test_actions([
+        TestAction::inspect_context(|context| {
+            context.runtime_limits_mut().set_host_recursion_limit(4096);
+        }),
+        TestAction::assert(indoc! {r#"
+            const array = "[".repeat(33) + "]".repeat(33);
+            const object = '{"a":'.repeat(33) + '0' + '}'.repeat(33);
+            // serde_json discards the first value of a duplicate key.
+            const duplicate = '{"a":' + array + ',"a":0}';
+            for (const text of [array, object, duplicate]) {
+                let caught = false;
+                try {
+                    JSON.parse(text);
+                } catch (e) {
+                    caught = e instanceof RangeError;
+                }
+                if (!caught) throw new Error("missing JSON depth limit");
+            }
+            JSON.parse("[".repeat(32) + "]".repeat(32)).length === 1 &&
+            JSON.parse('{"a":'.repeat(32) + '0' + '}'.repeat(32)).a !== undefined
+        "#}),
+        TestAction::assert(indoc! {r#"
+            const value = '['.repeat(100) + String.fromCharCode(34, 92, 34, 92, 92) + '}'.repeat(100);
+            JSON.parse(JSON.stringify({value})).value === value
+        "#}),
+        TestAction::assert(indoc! {r#"
+            let syntaxError = false;
+            try {
+                JSON.parse("[".repeat(33));
+            } catch (e) {
+                syntaxError = e instanceof SyntaxError;
+            }
+            syntaxError
+        "#}),
+    ]);
+}
+
+#[test]
+fn json_parse_input_depth_obeys_host_limit() {
+    run_test_actions([
+        TestAction::inspect_context(|context| {
+            context.runtime_limits_mut().set_host_recursion_limit(24);
+        }),
+        TestAction::assert(indoc! {r#"
+            let caught = false;
+            try {
+                JSON.parse("[".repeat(8) + "]".repeat(8));
+            } catch (e) {
+                caught = e instanceof RangeError;
+            }
+            caught && JSON.parse("[".repeat(7) + "]".repeat(7)).length === 1
+        "#}),
+    ]);
+}
