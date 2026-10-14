@@ -342,3 +342,51 @@ fn json_stringify_cyclic_nested_object_throws_type_error() {
         "cyclic object value",
     )]);
 }
+
+// A reviver that calls JSON.parse again nests the parser, the compiler and the
+// VM on the Rust stack each time. At the host limit pages get (4096) that used
+// to overflow the thread stack; each JSON.parse is now charged 16 re-entries,
+// so the nesting stops early with a catchable RangeError.
+#[test]
+fn json_parse_reentrant_reviver_throws_range_error() {
+    run_test_actions([
+        TestAction::inspect_context(|context| {
+            context.runtime_limits_mut().set_recursion_limit(16384);
+            context.runtime_limits_mut().set_host_recursion_limit(4096);
+        }),
+        TestAction::assert(indoc! {r#"
+            let depth = 0;
+            function revive(key, value) {
+                depth++;
+                return JSON.parse("[1]", revive);
+            }
+            let caught = false;
+            try {
+                JSON.parse("[1]", revive);
+            } catch (e) {
+                caught = e instanceof RangeError;
+            }
+            caught && depth > 0 && depth < 300
+        "#}),
+    ]);
+}
+
+// Deep JSON walked by a reviver is bounded by the host limit as well.
+#[test]
+fn json_parse_deep_value_with_reviver_throws_range_error() {
+    run_test_actions([
+        TestAction::inspect_context(|context| {
+            context.runtime_limits_mut().set_host_recursion_limit(64);
+        }),
+        TestAction::assert(indoc! {r#"
+            const text = "[".repeat(100) + "]".repeat(100);
+            let caught = false;
+            try {
+                JSON.parse(text, (k, v) => v);
+            } catch (e) {
+                caught = e instanceof RangeError;
+            }
+            caught && JSON.parse("[".repeat(20) + "]".repeat(20), (k, v) => v).length === 1
+        "#}),
+    ]);
+}
