@@ -37,6 +37,7 @@ use std::cmp::{Ordering, min};
 use super::{BuiltInBuilder, BuiltInConstructor, IntrinsicObject};
 
 mod array_iterator;
+use crate::object::operations::{poll_native_work, with_native_recursion};
 use crate::value::JsVariant;
 pub(crate) use array_iterator::ArrayIterator;
 
@@ -1060,6 +1061,10 @@ impl Array {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
+        with_native_recursion(context, |context| Self::join_inner(this, args, context))
+    }
+
+    fn join_inner(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
         // 1. Let O be ? ToObject(this value).
         let o = this.to_object(context)?;
         // 2. Let len be ? LengthOfArrayLike(O).
@@ -1074,10 +1079,14 @@ impl Array {
         };
 
         // 5. Let R be the empty String.
-        let mut r = Vec::with_capacity(len as usize + len.saturating_sub(1) as usize);
+        let mut r = Vec::with_capacity(usize::try_from(len.min(1024)).unwrap_or(1024));
         // 6. Let k be 0.
         // 7. Repeat, while k < len,
         for k in 0..len {
+            poll_native_work(context)?;
+            if k >= context.vm.runtime_limits.loop_iteration_limit() {
+                return Err(crate::error::RuntimeLimitError::LoopIteration.into());
+            }
             // a. If k > 0, set R to the string-concatenation of R and sep.
             if k > 0 {
                 r.push(separator.clone());
@@ -1116,6 +1125,10 @@ impl Array {
         _: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
+        with_native_recursion(context, |context| Self::to_string_inner(this, context))
+    }
+
+    fn to_string_inner(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
         // 1. Let array be ? ToObject(this value).
         let array = this.to_object(context)?;
         // 2. Let func be ? Get(array, "join").
@@ -1932,6 +1945,31 @@ impl Array {
         this_arg: &JsValue,
         context: &mut Context,
     ) -> JsResult<u64> {
+        with_native_recursion(context, |context| {
+            Self::flatten_into_array_inner(
+                target,
+                source,
+                source_len,
+                start,
+                depth,
+                mapper_function,
+                this_arg,
+                context,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn flatten_into_array_inner(
+        target: &JsObject,
+        source: &JsObject,
+        source_len: u64,
+        start: u64,
+        depth: u64,
+        mapper_function: Option<&JsObject>,
+        this_arg: &JsValue,
+        context: &mut Context,
+    ) -> JsResult<u64> {
         // 1. Assert target is Object
         // 2. Assert source is Object
 
@@ -1948,6 +1986,10 @@ impl Array {
 
         // 6. Repeat, while R(sourceIndex) < sourceLen
         while source_index < source_len {
+            poll_native_work(context)?;
+            if source_index >= context.vm.runtime_limits.loop_iteration_limit() {
+                return Err(crate::error::RuntimeLimitError::LoopIteration.into());
+            }
             // a. Let P be ToString(sourceIndex)
             let p = source_index;
 

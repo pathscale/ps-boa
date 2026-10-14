@@ -1,3 +1,5 @@
+use std::{cell::Cell, rc::Rc};
+
 use crate::{
     JsString, SpannedSourceText,
     builtins::function::ThisMode,
@@ -27,6 +29,7 @@ pub(crate) struct FunctionCompiler {
     name_scope: Option<Scope>,
     spanned_source_text: SpannedSourceText,
     source_path: SourcePath,
+    recursion_depth: Rc<Cell<usize>>,
 }
 
 impl FunctionCompiler {
@@ -44,6 +47,7 @@ impl FunctionCompiler {
             name_scope: None,
             spanned_source_text,
             source_path: SourcePath::None,
+            recursion_depth: Rc::new(Cell::new(0)),
         }
     }
 
@@ -111,6 +115,11 @@ impl FunctionCompiler {
         self
     }
 
+    pub(crate) fn recursion_depth(mut self, depth: Rc<Cell<usize>>) -> Self {
+        self.recursion_depth = depth;
+        self
+    }
+
     /// Compile a function statement list and it's parameters into bytecode.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile(
@@ -141,6 +150,7 @@ impl FunctionCompiler {
             self.source_path,
         );
 
+        compiler.recursion_depth = self.recursion_depth;
         compiler.length = length;
         compiler.code_block_flags.set(
             CodeBlockFlags::HAS_PROTOTYPE_PROPERTY,

@@ -156,6 +156,7 @@ where
     );
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         let token = cursor.peek(0, interner).or_abrupt()?;
         let super_ref = match token.kind() {
             TokenKind::Keyword((Keyword::Extends, true)) => {

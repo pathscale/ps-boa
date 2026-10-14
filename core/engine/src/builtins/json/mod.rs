@@ -22,6 +22,7 @@ use boa_gc::{Finalize, Gc, Trace};
 use boa_macros::utf16;
 
 use crate::JsExpect;
+use crate::object::operations::{poll_native_work, with_native_recursion};
 use crate::{
     Context, JsArgs, JsBigInt, JsData, JsResult, JsString, JsValue, SpannedSourceText,
     builtins::BuiltInObject,
@@ -496,6 +497,10 @@ impl Json {
                     _ => None,
                 };
                 for i in 0..len {
+                    poll_native_work(context)?;
+                    if i as u64 >= context.vm.runtime_limits.loop_iteration_limit() {
+                        return Err(crate::error::RuntimeLimitError::LoopIteration.into());
+                    }
                     let child_node = children.and_then(|c| c.get(i as usize));
                     // 1. Let prop be ! ToString(𝔽(I)).
                     // 2. Let newElement be ? InternalizeJSONProperty(val, prop, reviver).
@@ -532,7 +537,11 @@ impl Json {
                 };
 
                 // ii. For each String P of keys, do
-                for p in keys {
+                for (index, p) in keys.into_iter().enumerate() {
+                    poll_native_work(context)?;
+                    if index as u64 >= context.vm.runtime_limits.loop_iteration_limit() {
+                        return Err(crate::error::RuntimeLimitError::LoopIteration.into());
+                    }
                     // This is safe, because EnumerableOwnPropertyNames with 'key' type only returns strings.
                     let p = p
                         .as_string()
@@ -764,6 +773,10 @@ impl Json {
 
                     // 4. Repeat, while k < len,
                     while k < len {
+                        poll_native_work(context)?;
+                        if k >= context.vm.runtime_limits.loop_iteration_limit() {
+                            return Err(crate::error::RuntimeLimitError::LoopIteration.into());
+                        }
                         // a. Let prop be ! ToString(𝔽(k)).
                         // b. Let v be ? Get(replacer, prop).
                         let v = replacer_obj.get(k, context)?;
@@ -875,6 +888,17 @@ impl Json {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-serializejsonproperty
     fn serialize_json_property(
+        state: &mut StateRecord,
+        key: JsString,
+        holder: &JsObject,
+        context: &mut Context,
+    ) -> JsResult<Option<JsString>> {
+        with_native_recursion(context, |context| {
+            Self::serialize_json_property_inner(state, key, holder, context)
+        })
+    }
+
+    fn serialize_json_property_inner(
         state: &mut StateRecord,
         key: JsString,
         holder: &JsObject,
@@ -1123,9 +1147,13 @@ impl Json {
         let mut partial = Vec::with_capacity(k.len());
 
         // 8. For each element P of K, do
-        for p in &k {
+        for (index, p) in k.iter().enumerate() {
             // a. Let strP be ? SerializeJSONProperty(state, P, value).
-            let str_p = Self::serialize_json_property(state, p.clone(), value, context);
+            let str_p = if index as u64 >= context.vm.runtime_limits.loop_iteration_limit() {
+                Err(crate::error::RuntimeLimitError::LoopIteration.into())
+            } else {
+                Self::serialize_json_property(state, p.clone(), value, context)
+            };
             let str_p = match str_p {
                 Ok(v) => v,
                 Err(e) => {
@@ -1244,7 +1272,7 @@ impl Json {
         };
 
         // 5. Let partial be a new empty List.
-        let mut partial = Vec::with_capacity(len as usize);
+        let mut partial = Vec::with_capacity(usize::try_from(len.min(1024)).unwrap_or(1024));
 
         // 7. Let index be 0.
         let mut index = 0;
@@ -1252,7 +1280,11 @@ impl Json {
         // 8. Repeat, while index < len,
         while index < len {
             // a. Let strP be ? SerializeJSONProperty(state, ! ToString(𝔽(index)), value).
-            let str_p = Self::serialize_json_property(state, index.into(), value, context);
+            let str_p = if index >= context.vm.runtime_limits.loop_iteration_limit() {
+                Err(crate::error::RuntimeLimitError::LoopIteration.into())
+            } else {
+                Self::serialize_json_property(state, index.into(), value, context)
+            };
             let str_p = match str_p {
                 Ok(v) => v,
                 Err(e) => {

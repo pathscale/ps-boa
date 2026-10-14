@@ -116,6 +116,7 @@ where
     type Output = ast::Statement;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         // TODO: add BreakableStatement and divide Whiles, fors and so on to another place.
         let tok = cursor.peek(0, interner).or_abrupt()?;
 
@@ -514,6 +515,7 @@ where
     type Output = ObjectPattern;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         let start = cursor
             .expect(
                 TokenKind::Punctuator(Punctuator::OpenBlock),
@@ -762,6 +764,7 @@ where
     type Output = ArrayPattern;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        let _depth = cursor.enter_recursion(interner)?;
         let start = cursor
             .expect(
                 TokenKind::Punctuator(Punctuator::OpenBracket),

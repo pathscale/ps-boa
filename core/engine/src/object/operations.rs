@@ -17,6 +17,50 @@ use crate::{
     value::Type,
 };
 
+const NATIVE_RECURSION_LIMIT: usize = 256;
+
+pub(crate) fn poll_native_work(context: &mut Context) -> JsResult<()> {
+    context.check_runtime_limits()?;
+
+    if context
+        .vm
+        .interrupt_flag
+        .as_ref()
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        || context.execution_time_limit_exceeded()
+    {
+        return Err(crate::error::RuntimeLimitError::Interrupted.into());
+    }
+
+    #[cfg(feature = "fuzz")]
+    {
+        if context.instructions_remaining == 0 {
+            return Err(crate::error::EngineError::NoInstructionsRemain.into());
+        }
+        context.instructions_remaining -= 1;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn with_native_recursion<T>(
+    context: &mut Context,
+    operation: impl FnOnce(&mut Context) -> JsResult<T>,
+) -> JsResult<T> {
+    let previous_depth = context.vm.host_call_depth;
+    if previous_depth >= NATIVE_RECURSION_LIMIT {
+        return Err(JsNativeError::range()
+            .with_message("Maximum call stack size exceeded")
+            .into());
+    }
+
+    let _execution = context.enter_execution_time_limit();
+    context.vm.host_call_depth = previous_depth + 1;
+    let result = poll_native_work(context).and_then(|()| operation(context));
+    context.vm.host_call_depth = previous_depth;
+    result
+}
+
 /// Object integrity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrityLevel {
@@ -439,6 +483,15 @@ impl JsObject {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
+        with_native_recursion(context, |context| self.call_inner(this, args, context))
+    }
+
+    fn call_inner(
+        &self,
+        this: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
         // SKIP: 1. If argumentsList is not present, set argumentsList to a new empty List.
         // SKIP: 2. If IsCallable(F) is false, throw a TypeError exception.
         // NOTE(HalidOdat): For object's that are not callable we implement a special __call__ internal method
@@ -471,9 +524,7 @@ impl JsObject {
             context.vm.frames[frame_index + 1].set_exit_early(true);
         }
 
-        context.vm.host_call_depth += 1;
         let result = context.run().consume();
-        context.vm.host_call_depth = context.vm.host_call_depth.saturating_sub(1);
 
         context.vm.pop_frame().js_expect("frame must exist")?;
 
@@ -495,6 +546,17 @@ impl JsObject {
     #[track_caller]
     #[inline]
     pub fn construct(
+        &self,
+        args: &[JsValue],
+        new_target: Option<&Self>,
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        with_native_recursion(context, |context| {
+            self.construct_inner(args, new_target, context)
+        })
+    }
+
+    fn construct_inner(
         &self,
         args: &[JsValue],
         new_target: Option<&Self>,
@@ -527,9 +589,7 @@ impl JsObject {
             context.vm.frames[frame_index + 1].set_exit_early(true);
         }
 
-        context.vm.host_call_depth += 1;
         let result = context.run().consume();
-        context.vm.host_call_depth = context.vm.host_call_depth.saturating_sub(1);
 
         context.vm.pop_frame().js_expect("frame must exist")?;
 

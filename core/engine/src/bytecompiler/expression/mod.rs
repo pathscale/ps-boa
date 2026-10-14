@@ -89,6 +89,9 @@ impl ByteCompiler<'_> {
     }
 
     pub(crate) fn compile_expr_impl(&mut self, expr: &Expression, dst: &Register) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit, dst),
             Expression::RegExpLiteral(regexp) => {
