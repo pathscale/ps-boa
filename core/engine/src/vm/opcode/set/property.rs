@@ -31,6 +31,7 @@ fn cached_set_own(
     };
     if slot.attributes.is_accessor_descriptor()
         || slot.attributes.contains(SlotAttributes::PROTOTYPE)
+        || !slot.attributes.contains(SlotAttributes::WRITABLE)
     {
         return false;
     }
@@ -70,7 +71,10 @@ fn set_by_name(
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
 
     let object_borrowed = object.borrow();
-    if let Some(slot) = ic.get(object_borrowed.shape()) {
+    if let Some(slot) = ic.get(object_borrowed.shape()).filter(|slot| {
+        slot.attributes.is_accessor_descriptor()
+            || slot.attributes.contains(SlotAttributes::WRITABLE)
+    }) {
         let slot_index = slot.index as usize;
 
         if slot.attributes.is_accessor_descriptor() {

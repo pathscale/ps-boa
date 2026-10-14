@@ -15,6 +15,9 @@ mod with;
 impl ByteCompiler<'_> {
     /// Compiles a [`Statement`] `boa_ast` node.
     pub fn compile_stmt(&mut self, node: &Statement, use_expr: bool, root_statement: bool) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         match node {
             Statement::Var(var) => self.compile_var_decl(var),
             Statement::If(node) => self.compile_if(node, use_expr),

@@ -37,6 +37,7 @@ use std::{
     borrow::{Borrow, BorrowMut},
     cell::Cell,
     ops::{Deref, DerefMut},
+    rc::Rc,
 };
 
 use crate::{
@@ -492,12 +493,25 @@ impl<'a> BorrowMut<ByteCompiler<'a>> for SourcePositionGuard<'_, 'a> {
     }
 }
 
+const BYTECOMPILER_RECURSION_LIMIT: usize = 64;
+
+struct CompilationDepthGuard {
+    depth: Rc<Cell<usize>>,
+}
+
+impl Drop for CompilationDepthGuard {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get() - 1);
+    }
+}
+
 /// The [`ByteCompiler`] is used to compile ECMAScript AST from [`boa_ast`] to bytecode.
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ByteCompiler<'ctx> {
     /// Name of this function.
     pub(crate) function_name: JsString,
+    recursion_depth: Rc<Cell<usize>>,
 
     /// The number of arguments expected.
     pub(crate) length: u32,
@@ -651,6 +665,7 @@ impl<'ctx> ByteCompiler<'ctx> {
 
         Self {
             function_name: name,
+            recursion_depth: Rc::new(Cell::new(0)),
             length: 0,
             bytecode: BytecodeEmitter::new(),
             source_map_builder: SourceMapBuilder::default(),
@@ -1072,6 +1087,19 @@ impl<'ctx> ByteCompiler<'ctx> {
                 ic_index.into(),
             );
         }
+    }
+
+    fn enter_recursion(&mut self) -> Option<CompilationDepthGuard> {
+        let depth = self.recursion_depth.get();
+        if depth >= BYTECOMPILER_RECURSION_LIMIT {
+            self.emit_type_error("bytecompiler nesting limit exceeded");
+            return None;
+        }
+
+        self.recursion_depth.set(depth + 1);
+        Some(CompilationDepthGuard {
+            depth: Rc::clone(&self.recursion_depth),
+        })
     }
 
     fn emit_type_error(&mut self, message: &str) {
@@ -1737,6 +1765,9 @@ impl<'ctx> ByteCompiler<'ctx> {
 
     /// Compile a [`StatementList`].
     pub fn compile_statement_list(&mut self, list: &StatementList, use_expr: bool, block: bool) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         if use_expr || self.jump_control_info_has_use_expr() {
             let mut use_expr_index = 0;
             for (i, statement) in list.statements().iter().enumerate() {
@@ -1772,6 +1803,9 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// This avoids allocating a register and emitting a store for the result
     /// when it's not needed (e.g., expression statements, for-loop updates).
     pub(crate) fn compile_expr_for_side_effects(&mut self, expr: &Expression) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         match expr {
             Expression::Call(call) => {
                 self.call(Callable::Call(call), CallResultDest::Discard);
@@ -1802,6 +1836,9 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// expressions resolving to a local or const-cached register, this pushes from
     /// that register directly, avoiding a `Move` into a temporary.
     pub(crate) fn compile_expr_to_stack(&mut self, expr: &Expression) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         match expr {
             Expression::Call(call) => {
                 self.call(Callable::Call(call), CallResultDest::Stack);
@@ -1842,15 +1879,20 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// it is built only from literals, identifiers, `this` and operators that do not assign. Such
     /// bindings are never captured, so only a syntactic assignment here could change one.
     pub(crate) fn assigns_nothing(expr: &Expression) -> bool {
-        match expr {
-            Expression::Literal(_) | Expression::Identifier(_) | Expression::This(_) => true,
-            Expression::Binary(binary) => {
-                Self::assigns_nothing(binary.lhs()) && Self::assigns_nothing(binary.rhs())
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expression::Literal(_) | Expression::Identifier(_) | Expression::This(_) => {}
+                Expression::Binary(binary) => {
+                    pending.push(binary.rhs());
+                    pending.push(binary.lhs());
+                }
+                Expression::Unary(unary) => pending.push(unary.target()),
+                Expression::Parenthesized(expr) => pending.push(expr.expression()),
+                _ => return false,
             }
-            Expression::Unary(unary) => Self::assigns_nothing(unary.target()),
-            Expression::Parenthesized(expr) => Self::assigns_nothing(expr.expression()),
-            _ => false,
         }
+        true
     }
 
     /// [`Self::compile_expr_operand`] for an operand evaluated before `then`: a register-held
@@ -1985,6 +2027,9 @@ impl<'ctx> ByteCompiler<'ctx> {
         this: &Register,
         value: &Register,
     ) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         let mut jumps = Vec::with_capacity(optional.chain().len());
 
         match optional.target().flatten() {
@@ -2470,6 +2515,9 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// Compile a [`Declaration`].
     #[allow(unused_variables)]
     pub fn compile_decl(&mut self, decl: &Declaration, block: bool) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         match decl {
             #[cfg(feature = "annex-b")]
             Declaration::FunctionDeclaration(function) if block => {
@@ -2529,6 +2577,7 @@ impl<'ctx> ByteCompiler<'ctx> {
         let spanned_source_text = SpannedSourceText::new(self.source_text(), linear_span);
 
         let code = FunctionCompiler::new(spanned_source_text)
+            .recursion_depth(Rc::clone(&self.recursion_depth))
             .name(name)
             .generator(generator)
             .r#async(r#async)
@@ -2609,6 +2658,7 @@ impl<'ctx> ByteCompiler<'ctx> {
         let spanned_source_text = SpannedSourceText::new(self.source_text(), linear_span);
 
         let code = FunctionCompiler::new(spanned_source_text)
+            .recursion_depth(Rc::clone(&self.recursion_depth))
             .name(name)
             .generator(generator)
             .r#async(r#async)
@@ -2659,6 +2709,7 @@ impl<'ctx> ByteCompiler<'ctx> {
         let spanned_source_text = SpannedSourceText::new(self.source_text(), linear_span);
 
         let code = FunctionCompiler::new(spanned_source_text)
+            .recursion_depth(Rc::clone(&self.recursion_depth))
             .name(name)
             .generator(generator)
             .r#async(r#async)
@@ -3026,6 +3077,9 @@ impl<'ctx> ByteCompiler<'ctx> {
         def: BindingOpcode,
         object: &Register,
     ) {
+        let Some(_depth) = self.enter_recursion() else {
+            return;
+        };
         self.compile_declaration_pattern_impl(pattern, def, object);
     }
 }
