@@ -180,6 +180,20 @@ impl Stack {
         }
     }
 
+    /// Discard stack values above the active frame's register window.
+    #[inline]
+    pub(crate) fn truncate_to_register_end(&mut self, rp: usize, register_count: usize) {
+        let register_end = rp + register_count;
+        if self.stack.len() <= register_end {
+            return;
+        }
+
+        for value in self.stack.drain(register_end..) {
+            // SAFETY: the interpreter never runs inside a collection sweep.
+            unsafe { value.release_outside_collection() };
+        }
+    }
+
     /// Split the stack at the given frame.
     pub(crate) fn split_off_frame(&mut self, frame: &CallFrame) -> Self {
         let frame_pointer = frame.frame_pointer();
@@ -767,6 +781,8 @@ impl Vm {
 
         let catch_address = handler.handler();
         let environment_sp = frame.env_fp + handler.environment_count;
+        let register_pointer = frame.rp as usize;
+        let register_count = frame.code_block.register_count as usize;
 
         // Go to handler location.
         frame.pc = u32::from(catch_address);
@@ -774,6 +790,8 @@ impl Vm {
         self.frame_mut()
             .environments
             .truncate(environment_sp as usize);
+        self.stack
+            .truncate_to_register_end(register_pointer, register_count);
 
         true
     }
