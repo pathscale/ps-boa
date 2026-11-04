@@ -13,12 +13,6 @@ name: Publish crates
 # against unpublished siblings leaves a release nobody can build.
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - Cargo.toml
-      - core/**
-      - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
       dry_run:

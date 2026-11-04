@@ -17,11 +17,6 @@ name: Fork check
 # matrix it has stopped earning its place.
 
 on:
-  pull_request:
-    branches:
-      - master
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
