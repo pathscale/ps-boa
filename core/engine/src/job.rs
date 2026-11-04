@@ -801,6 +801,14 @@ pub trait JobExecutor: Any {
     /// [spec]: https://tc39.es/ecma262/#sec-jobs
     fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context);
 
+    /// Observes an `import()` promise before its loading job is enqueued.
+    ///
+    /// The promise settles after loading, linking and evaluation, including
+    /// top-level `await`. Hosts may retain it to track outstanding script work.
+    /// Retained promises should be released once fulfilled or rejected.
+    /// Observing the promise does not install JavaScript rejection handlers.
+    fn on_dynamic_import(self: Rc<Self>, _promise: &crate::object::builtins::JsPromise) {}
+
     /// Runs all jobs in the executor.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()>;
 

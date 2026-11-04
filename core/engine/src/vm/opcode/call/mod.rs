@@ -597,6 +597,11 @@ impl ImportCall {
             }
         };
 
+        // Register the final import promise before any loading work can run.
+        let observed_promise = crate::object::builtins::JsPromise::from_object(promise.clone())
+            .expect("intrinsic promise capability contains a Promise");
+        context.job_executor().on_dynamic_import(&observed_promise);
+
         // 8. Perform HostLoadImportedModule(referrer, specifierString, empty, promiseCapability).
         let job = NativeAsyncJob::with_realm(
             async move |context| {
