@@ -15,7 +15,7 @@ name = "boa_jit"
 
 [dependencies]
 cranelift-codegen = "^0.135.1"
-cranelift-frontend = "^0.135.1"
+cranelift-frontend = "^0.136.2"
 cranelift-jit = "^0.135.1"
 cranelift-module = "^0.135.1"
 cranelift-native = "^0.135.1"
